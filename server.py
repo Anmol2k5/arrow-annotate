@@ -9,8 +9,16 @@ import json
 import ctypes
 import time
 import re
+import datetime
+import asyncio
+from concurrent.futures import Future
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_from_directory
+import websockets
+
+from hybrid_pointer import find_target
+
+SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +215,125 @@ def screenshot():
     })
 
 
+@app.route("/screenshots/<path:filename>")
+def serve_screenshot_file(filename):
+    """Serve captured screenshot files for Agentation MCP to reference."""
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    return send_from_directory(SCREENSHOTS_DIR, filename)
+
+
+@app.route("/screenshots/save", methods=["POST"])
+def save_screenshot():
+    """Save a base64-encoded screenshot and return its URL.
+
+    Accepts: { "image": "<base64_png>", "annotation": "<optional text>" }
+    Returns: { "path": "...", "url": "...", "filename": "..." }
+    """
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image")
+    if not image_b64:
+        return jsonify({"error": "image (base64) required"}), 400
+
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"capture_{ts}.png"
+    path = os.path.join(SCREENSHOTS_DIR, filename)
+
+    try:
+        image_data = base64.b64decode(image_b64)
+        with open(path, "wb") as f:
+            f.write(image_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to save image: {e}"}), 500
+
+    return jsonify({
+        "path": os.path.abspath(path),
+        "filename": filename,
+        "url": f"/screenshots/{filename}",
+        "annotation": data.get("annotation", ""),
+    })
+
+
+def _resolve_target(action: str, target: str, x, y):
+    """Auto-resolve text targets to screen coordinates via UIA + OCR.
+
+    For click/rightclick/doubleclick actions: if the caller provides a
+    text target but no explicit (x, y), run the hybrid pointer pipeline
+    to find the element on screen.  Returns (x, y, resolved_info) where
+    resolved_info is a dict with resolution metadata, or None.
+    """
+    POSITIONAL_ACTIONS = {"click", "rightclick", "doubleclick"}
+    if action not in POSITIONAL_ACTIONS:
+        return x, y, None
+    if x is not None and y is not None:
+        return x, y, None  # already have coordinates
+    if not target:
+        return x, y, None  # nothing to resolve
+
+    hit = find_target(target)
+    if hit is None:
+        return None, None, {"error": f"Could not resolve target: {target}"}
+
+    return hit.x, hit.y, {
+        "resolved": True,
+        "source": hit.source,
+        "label": hit.label,
+        "confidence": round(hit.confidence, 3),
+        "bbox": {"left": hit.bbox[0], "top": hit.bbox[1],
+                 "right": hit.bbox[2], "bottom": hit.bbox[3]},
+    }
+
+
+@app.route("/resolve", methods=["POST"])
+def resolve():
+    """Resolve a text query to screen coordinates via UIA + OCR.
+
+    Accepts: { "query": "Save button" }
+    Returns: { "status": "ok", "target": { ... } } or error.
+    """
+    data = request.get_json(silent=True) or {}
+    query = data.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "query required"}), 400
+
+    hit = find_target(query)
+    if hit is None:
+        return jsonify({"error": f"No element found matching: {query}",
+                        "status": "not_found"}), 404
+
+    return jsonify({
+        "status": "ok",
+        "target": {
+            "x": hit.x,
+            "y": hit.y,
+            "label": hit.label,
+            "source": hit.source,
+            "confidence": round(hit.confidence, 3),
+            "bbox": {"left": hit.bbox[0], "top": hit.bbox[1],
+                     "right": hit.bbox[2], "bottom": hit.bbox[3]},
+        },
+    })
+
+
 @app.route("/execute", methods=["POST"])
 def execute():
-    """Dispatch OS actions based on type."""
+    """Dispatch OS actions based on type.
+
+    For click/rightclick/doubleclick: if 'target' is provided but x/y
+    are missing, the hybrid pointer (UIA + OCR) auto-resolves the text
+    target to screen coordinates before executing.
+    """
     data = request.get_json(silent=True) or {}
     action = data.get("type", "").strip().lower()
     target = data.get("target", "")
     x = data.get("x")
     y = data.get("y")
+
+    # Auto-resolve text targets to coordinates
+    x, y, resolve_info = _resolve_target(action, target, x, y)
+    if resolve_info and "error" in resolve_info:
+        return jsonify({"error": resolve_info["error"], "type": action,
+                        "status": "error"}), 404
 
     ctrl = app.config["OS_CTRL"]
 
@@ -235,6 +354,8 @@ def execute():
         result = handler()
         result["type"] = action
         result["status"] = "ok" if "error" not in result else "error"
+        if resolve_info:
+            result["resolved"] = resolve_info
         code = 200 if result["status"] == "ok" else 400
         return jsonify(result), code
     except Exception as e:
@@ -261,6 +382,12 @@ def execute_inner(action_data):
     target = action_data.get("target", "")
     x = action_data.get("x")
     y = action_data.get("y")
+
+    # Auto-resolve text targets to coordinates
+    x, y, resolve_info = _resolve_target(action, target, x, y)
+    if resolve_info and "error" in resolve_info:
+        return {"error": resolve_info["error"], "type": action, "status": "error"}
+
     ctrl = app.config["OS_CTRL"]
 
     dispatch = {
@@ -279,9 +406,117 @@ def execute_inner(action_data):
         result = handler()
         result["type"] = action
         result["status"] = "ok" if "error" not in result else "error"
+        if resolve_info:
+            result["resolved"] = resolve_info
         return result
     except Exception as e:
         return {"error": str(e), "type": action, "status": "error"}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket Bridge  (connects to browser extension)
+# ---------------------------------------------------------------------------
+
+class WebSocketBridge:
+    """Bidirectional bridge between Flask and the browser extension via WebSocket.
+
+    Runs its own asyncio event loop in a daemon thread.
+    Extension connects to ws://HOST:PORT and receives inspect commands.
+    """
+
+    def __init__(self, host="127.0.0.1", port=5002):
+        self.host = host
+        self.port = port
+        self._loop = None
+        self._thread = None
+        self._ws = None
+        self._pending: dict[str, Future] = {}
+        self._ready = threading.Event()
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="WSBridge")
+        self._thread.start()
+        self._ready.wait(timeout=3)
+
+    @property
+    def connected(self):
+        return self._ws is not None
+
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._serve())
+
+    async def _serve(self):
+        self._ready.set()
+        async with websockets.serve(self._handler, self.host, self.port):
+            await asyncio.Future()
+
+    async def _handler(self, websocket):
+        self._ws = websocket
+        try:
+            async for raw in websocket:
+                data = json.loads(raw)
+                msg_id = data.pop("id", None)
+                if msg_id and msg_id in self._pending:
+                    fut = self._pending.pop(msg_id)
+                    fut.set_result(data)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            self._ws = None
+
+    def inspect(self, x: int, y: int, timeout: float = 5.0) -> dict:
+        """Send inspect command to extension. Blocking call from any thread."""
+        if not self._ws:
+            raise ConnectionError("No browser extension connected to WebSocket bridge")
+
+        msg_id = f"{time.monotonic_ns()}"
+        fut: Future = Future()
+        self._pending[msg_id] = fut
+
+        async def _send():
+            await self._ws.send(json.dumps({
+                "type": "inspect", "id": msg_id, "x": x, "y": y,
+            }))
+
+        asyncio.run_coroutine_threadsafe(_send(), self._loop)
+
+        try:
+            return fut.result(timeout=timeout)
+        except TimeoutError:
+            self._pending.pop(msg_id, None)
+            raise TimeoutError("Extension did not respond in time")
+
+
+# ---------------------------------------------------------------------------
+# Inspect endpoint  (bridges Flask → WebSocketBridge)
+# ---------------------------------------------------------------------------
+
+@app.route("/inspect", methods=["POST"])
+def inspect_web():
+    """Inspect a DOM element at (x, y) in the active browser tab.
+
+    Accepts: { "x": int, "y": int }
+    Returns: element data from the content script, or error.
+    """
+    bridge: WebSocketBridge = app.config.get("WS_BRIDGE")
+    if not bridge or not bridge.connected:
+        return jsonify({"error": "Browser extension not connected"}), 503
+
+    data = request.get_json(silent=True) or {}
+    x = data.get("x")
+    y = data.get("y")
+    if x is None or y is None:
+        return jsonify({"error": "x and y required"}), 400
+
+    try:
+        result = bridge.inspect(int(x), int(y))
+        return jsonify({"status": "ok", "element": result})
+    except ConnectionError as e:
+        return jsonify({"error": str(e)}), 503
+    except TimeoutError as e:
+        return jsonify({"error": str(e)}), 504
 
 
 # ---------------------------------------------------------------------------
@@ -289,12 +524,15 @@ def execute_inner(action_data):
 # ---------------------------------------------------------------------------
 
 class AgentServer:
-    """Wraps the Flask server in a background thread."""
+    """Wraps the Flask server and WebSocket bridge in background threads."""
 
-    def __init__(self, host="127.0.0.1", port=5001):
+    def __init__(self, host="127.0.0.1", port=5001, ws_host="127.0.0.1", ws_port=5002):
         self.host = host
         self.port = port
+        self.ws_host = ws_host
+        self.ws_port = ws_port
         self._thread = None
+        self._ws_bridge = None
         self._running = False
 
     def start(self):
@@ -302,6 +540,14 @@ class AgentServer:
             return
         self._running = True
         app.config["start_time"] = time.time()
+
+        # Start WebSocket bridge
+        self._ws_bridge = WebSocketBridge(host=self.ws_host, port=self.ws_port)
+        self._ws_bridge.start()
+        app.config["WS_BRIDGE"] = self._ws_bridge
+        print(f"[WSBridge] listening on ws://{self.ws_host}:{self.ws_port}")
+
+        # Start Flask
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,

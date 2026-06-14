@@ -5,3 +5,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+captures/
+screenshots/
+graphify-out/
