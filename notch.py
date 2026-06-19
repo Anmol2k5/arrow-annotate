@@ -1,28 +1,25 @@
 import math
 import random
 import os
-import json
 
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
-    QRect, QPoint,     QSize, pyqtSignal, pyqtProperty, QUrl
+    QRect, QRectF, QPoint, QPointF, QSize, pyqtProperty, pyqtSignal, QUrl
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QLinearGradient, QBrush, QPen, QFont, QFontMetrics,
     QPixmap, QPainterPath, QRegion, QTransform, QDesktopServices, QAction,
-    QConicalGradient, QPalette, QCursor
+    QConicalGradient, QPalette
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QStackedWidget, QGraphicsDropShadowEffect, QFrame, QSizePolicy,
-    QSpacerItem, QScrollArea, QGridLayout, QButtonGroup, QSlider,
-    QListWidget, QListWidgetItem, QProgressBar, QFileDialog, QMessageBox
+    QStackedWidget, QGraphicsDropShadowEffect, QFrame,
+    QScrollArea, QGridLayout, QButtonGroup,
+    QProgressBar, QMessageBox
 )
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from server import AgentServer
-from capture_store import CaptureRecord, CaptureStore
-from voice_input import VoiceInput
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -209,176 +206,95 @@ class ThinkingSpinnerWidget(QWidget):
 # ---------------------------------------------------------------------------
 # ScreenshotThumbnail  – clickable thumbnail with delete
 # ---------------------------------------------------------------------------
-class CaptureCard(QFrame):
+class ScreenshotThumbnail(QFrame):
     deleted = pyqtSignal(object)
-    send_requested = pyqtSignal(object)
-    copy_requested = pyqtSignal(object)
-    open_requested = pyqtSignal(object)
 
-    def __init__(self, record: "CaptureRecord", parent=None):
+    def __init__(self, path, parent=None):
         super().__init__(parent)
-        self._record = record
+        self._path = path
+        self._preview = None
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setFixedSize(130, 100)
         self.setStyleSheet("""
-            CaptureCard {
+            ScreenshotThumbnail {
                 background: rgba(255,255,255,6);
                 border: 1px solid rgba(255,255,255,10);
                 border-radius: 10px;
             }
-            CaptureCard:hover {
+            ScreenshotThumbnail:hover {
                 background: rgba(255,255,255,10);
                 border: 1px solid rgba(255,255,255,18);
             }
         """)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
 
-        # -- Left: thumbnail --
-        thumb_layout = QVBoxLayout()
-        thumb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._img_label = QLabel()
-        self._img_label.setFixedSize(120, 75)
+        self._img_label.setFixedSize(122, 72)
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._load_thumb()
-        thumb_layout.addWidget(self._img_label)
-        layout.addLayout(thumb_layout)
+        layout.addWidget(self._img_label)
 
-        # -- Right: metadata + actions --
-        right = QVBoxLayout()
-        right.setSpacing(3)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(0)
 
-        # Annotation
-        annotation = self._record.annotation_text or "No annotation"
-        self._annotation_label = QLabel(annotation)
-        self._annotation_label.setStyleSheet("color: rgba(255,255,255,180); font-size: 10px; font-weight: 600;")
-        self._annotation_label.setWordWrap(True)
-        self._annotation_label.setMaximumHeight(36)
-        right.addWidget(self._annotation_label)
+        name_label = QLabel(os.path.basename(self._path)[:16])
+        name_label.setStyleSheet("color: rgba(255,255,255,100); font-size: 9px;")
+        bottom.addWidget(name_label)
+        bottom.addStretch()
 
-        # Element selector
-        if self._record.element_selector and self._record.element_selector != "web_page":
-            sel = QLabel(f"`{self._record.element_selector[:55]}`")
-            sel.setStyleSheet("color: #7DD3FC; font-size: 9px;")
-            right.addWidget(sel)
-        else:
-            sel = QLabel("No web element detected")
-            sel.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-            right.addWidget(sel)
-
-        # React components
-        if self._record.react_components:
-            rc = QLabel(f"\u269B {self._record.react_components[:60]}")
-            rc.setStyleSheet("color: #A78BFA; font-size: 9px;")
-            right.addWidget(rc)
-
-        # Cursor position
-        pos = QLabel(f"\U0001F4CD ({self._record.cursor_x}, {self._record.cursor_y})")
-        pos.setStyleSheet("color: rgba(255,255,255,100); font-size: 9px;")
-        right.addWidget(pos)
-
-        right.addStretch()
-
-        # -- Action buttons --
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
-
-        open_btn = QPushButton("Open")
-        open_btn.setStyleSheet("""
-            QPushButton {
-                color: rgba(255,255,255,140); background: rgba(255,255,255,8);
-                border: 1px solid rgba(255,255,255,12); border-radius: 10px;
-                padding: 3px 10px; font-size: 9px; font-weight: 500;
-            }
-            QPushButton:hover { background: rgba(255,255,255,14); }
-        """)
-        open_btn.clicked.connect(lambda: self.open_requested.emit(self))
-        btn_row.addWidget(open_btn)
-
-        copy_btn = QPushButton("Copy Code")
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                color: #7DD3FC; background: rgba(125,211,252,12);
-                border: 1px solid rgba(125,211,252,25); border-radius: 10px;
-                padding: 3px 10px; font-size: 9px; font-weight: 500;
-            }
-            QPushButton:hover { background: rgba(125,211,252,20); }
-        """)
-        copy_btn.clicked.connect(lambda: self.copy_requested.emit(self))
-        btn_row.addWidget(copy_btn)
-
-        send_btn = QPushButton("Send to Agent")
-        send_btn.setStyleSheet("""
-            QPushButton {
-                color: #34D399; background: rgba(52,211,153,12);
-                border: 1px solid rgba(52,211,153,25); border-radius: 10px;
-                padding: 3px 10px; font-size: 9px; font-weight: 500;
-            }
-            QPushButton:hover { background: rgba(52,211,153,20); }
-        """)
-        send_btn.clicked.connect(lambda: self.send_requested.emit(self))
-        btn_row.addWidget(send_btn)
-
-        btn_row.addStretch()
-
-        # Status badge
-        st = self._record.agentation_status
-        if st == "sent":
-            badge = QLabel("\u25CF Sent")
-            badge.setStyleSheet("color: #34D399; font-size: 9px; font-weight: 600;")
-        elif st:
-            badge = QLabel(f"\u25CF {st.title()}")
-            badge.setStyleSheet("color: #F59E0B; font-size: 9px; font-weight: 600;")
-        else:
-            badge = QLabel("\u25CB New")
-            badge.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-        btn_row.addWidget(badge)
-
-        # Delete
-        del_btn = QPushButton("\u00D7")
-        del_btn.setFixedSize(18, 18)
+        del_btn = QPushButton("×")
+        del_btn.setFixedSize(16, 16)
         del_btn.setStyleSheet("""
             QPushButton {
-                color: rgba(255,255,255,60); background: transparent;
-                border: none; font-size: 13px; font-weight: bold;
+                color: rgba(255,255,255,80);
+                background: transparent;
+                border: none;
+                font-size: 12px;
+                font-weight: bold;
             }
             QPushButton:hover { color: #EF4444; }
         """)
         del_btn.clicked.connect(self._delete)
-        btn_row.addWidget(del_btn)
+        bottom.addWidget(del_btn)
 
-        right.addLayout(btn_row)
-        layout.addLayout(right, 1)
+        layout.addLayout(bottom)
+
+        self._load_thumb()
 
     def _load_thumb(self):
-        pix = QPixmap(self._record.screenshot_path)
+        pix = QPixmap(self._path)
         if not pix.isNull():
-            self._img_label.setPixmap(pix.scaled(120, 75, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self._preview = pix
+            self._img_label.setPixmap(pix.scaled(122, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def _delete(self):
-        reply = QMessageBox.question(self, "Delete", f"Delete this capture?",
+        reply = QMessageBox.question(self, "Delete", f"Delete {os.path.basename(self._path)}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                os.remove(self._record.screenshot_path)
+                os.remove(self._path)
             except Exception:
                 pass
-            from capture_store import CaptureStore
-            CaptureStore().delete(self._record.id)
             self.deleted.emit(self)
 
-    @property
-    def record(self):
-        return self._record
+    def mouseDoubleClickEvent(self, event):
+        if self._preview:
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Screenshot Detail")
+            dlg.setIconPixmap(self._preview.scaled(480, 360, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            dlg.exec()
 
 
 # ---------------------------------------------------------------------------
 # HomeView
 # ---------------------------------------------------------------------------
 class HomeView(QWidget):
+    _logo_cache = {}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._net = QNetworkAccessManager(self)
@@ -502,18 +418,24 @@ class HomeView(QWidget):
         self._integrations_layout.addWidget(row)
 
         # kick off Clearbit logo fetch
-        url = QUrl(f"https://logo.clearbit.com/{domain}")
-        reply = self._net.get(QNetworkRequest(url))
-        self._pending[reply] = icon_lbl
+        if domain in HomeView._logo_cache:
+            icon_lbl.setPixmap(HomeView._logo_cache[domain])
+        else:
+            url = QUrl(f"https://logo.clearbit.com/{domain}")
+            reply = self._net.get(QNetworkRequest(url))
+            self._pending[reply] = (domain, icon_lbl)
 
     def _on_logo_loaded(self, reply):
-        lbl = self._pending.pop(reply, None)
-        if lbl is None:
+        info = self._pending.pop(reply, None)
+        if info is None:
             return
+        domain, lbl = info
         data = reply.readAll()
         pix = QPixmap()
         if pix.loadFromData(data):
-            lbl.setPixmap(pix.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            scaled = pix.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            HomeView._logo_cache[domain] = scaled
+            lbl.setPixmap(scaled)
         reply.deleteLater()
 
     def _on_accent(self, btn_id):
@@ -637,62 +559,58 @@ class AgentsView(QWidget):
 # ---------------------------------------------------------------------------
 # ScreenshotsView
 # ---------------------------------------------------------------------------
-class CapturesView(QWidget):
-    def __init__(self, notch: "DynamicNotch"):
-        super().__init__()
-        self._notch = notch
-        self._cards: list[CaptureCard] = []
+class ScreenshotsView(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thumbnails = []
         self._setup_ui()
-        self._load_captures()
+        self._scan_existing()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 8, 16, 12)
         layout.setSpacing(8)
 
-        # Header
         top = QHBoxLayout()
-        hdr = QLabel("Captures")
+        hdr = QLabel("Captured Screenshots")
         hdr.setStyleSheet("color: rgba(255,255,255,160); font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
         top.addWidget(hdr)
         top.addStretch()
 
-        # Voice button
-        self._voice_btn = QPushButton("\U0001F3A4")
-        self._voice_btn.setFixedSize(28, 28)
-        self._voice_btn.setStyleSheet("""
+        highlight_btn = QPushButton("⛶ Highlight")
+        highlight_btn.setStyleSheet("""
             QPushButton {
-                color: rgba(255,255,255,140); background: rgba(255,255,255,8);
-                border: 1px solid rgba(255,255,255,12); border-radius: 14px;
-                font-size: 13px;
+                color: #A78BFA;
+                background: rgba(167,139,250,12);
+                border: 1px solid rgba(167,139,250,25);
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 10px;
+                font-weight: 600;
             }
-            QPushButton:hover { background: rgba(255,255,255,14); }
-            QPushButton:checked { background: rgba(239,68,68,25); border-color: rgba(239,68,68,40); }
+            QPushButton:hover { background: rgba(167,139,250,20); }
         """)
-        self._voice_btn.setCheckable(True)
-        self._voice_btn.clicked.connect(self._on_voice_toggle)
-        top.addWidget(self._voice_btn)
+        highlight_btn.clicked.connect(self._highlight)
+        top.addWidget(highlight_btn)
 
-        self._voice_status = QLabel("")
-        self._voice_status.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-        top.addWidget(self._voice_status)
-
-        # Capture button
         capture_btn = QPushButton("+ Capture")
         capture_btn.setStyleSheet("""
             QPushButton {
-                color: #7DD3FC; background: rgba(125,211,252,12);
-                border: 1px solid rgba(125,211,252,25); border-radius: 12px;
-                padding: 4px 14px; font-size: 10px; font-weight: 600;
+                color: #7DD3FC;
+                background: rgba(125,211,252,12);
+                border: 1px solid rgba(125,211,252,25);
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 10px;
+                font-weight: 600;
             }
             QPushButton:hover { background: rgba(125,211,252,20); }
         """)
-        capture_btn.clicked.connect(self._on_capture)
+        capture_btn.clicked.connect(self._capture)
         top.addWidget(capture_btn)
 
         layout.addLayout(top)
 
-        # Scroll area with card list
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("""
@@ -700,446 +618,71 @@ class CapturesView(QWidget):
             QScrollBar:vertical { width: 3px; background: transparent; }
             QScrollBar::handle:vertical { background: rgba(255,255,255,20); border-radius: 2px; }
         """)
-        self._scroll_w = QWidget()
-        self._scroll_w.setStyleSheet("background: transparent;")
-        self._card_layout = QVBoxLayout(self._scroll_w)
-        self._card_layout.setContentsMargins(0, 0, 0, 0)
-        self._card_layout.setSpacing(6)
-        self._card_layout.addStretch()
-        scroll.setWidget(self._scroll_w)
+        self._grid_w = QWidget()
+        self._grid_w.setStyleSheet("background: transparent;")
+        self._grid = QGridLayout(self._grid_w)
+        self._grid.setSpacing(6)
+        scroll.setWidget(self._grid_w)
         layout.addWidget(scroll, 1)
 
-    def _load_captures(self):
-        store = self._notch.get_capture_store()
-        for record in store.get_all():
-            self._add_card(record)
+    def _capture(self):
+        try:
+            import mss, io, base64
+            from PIL import Image
+            import datetime
 
-    def _add_card(self, record: "CaptureRecord"):
-        card = CaptureCard(record)
-        card.open_requested.connect(self._on_open)
-        card.copy_requested.connect(self._on_copy)
-        card.send_requested.connect(self._on_send)
-        card.deleted.connect(self._remove_card)
-        self._cards.append(card)
-        self._card_layout.insertWidget(len(self._cards) - 1, card)
+            screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+            os.makedirs(screenshots_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(screenshots_dir, f"capture_{ts}.png")
 
-    def add_capture(self, record: "CaptureRecord"):
-        self._add_card(record)
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]
+                img = sct.grab(monitor)
+                pil_img = Image.frombytes("RGB", img.size, img.rgb)
+                pil_img.save(path, "PNG")
 
-    def _remove_card(self, card: CaptureCard):
-        self._card_layout.removeWidget(card)
-        self._cards.remove(card)
-        card.deleteLater()
+            self._add_thumbnail(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Capture Error", str(e))
 
-    def _on_capture(self):
-        self._notch.do_capture()
+    def _highlight(self):
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_highlight_requested'):
+            parent_notch.on_highlight_requested()
 
-    def _on_voice_toggle(self, checked):
-        if checked:
-            self._voice_btn.setStyleSheet("""
-                QPushButton {
-                    color: #EF4444; background: rgba(239,68,68,25);
-                    border: 1px solid rgba(239,68,68,40); border-radius: 14px;
-                    font-size: 13px;
-                }
-                QPushButton:hover { background: rgba(239,68,68,30); }
-            """)
-            self._voice_status.setText("Listening...")
-            self._voice_status.setStyleSheet("color: #EF4444; font-size: 9px;")
-            self._notch.start_voice_capture()
-        else:
-            self._voice_btn.setStyleSheet("""
-                QPushButton {
-                    color: rgba(255,255,255,140); background: rgba(255,255,255,8);
-                    border: 1px solid rgba(255,255,255,12); border-radius: 14px;
-                    font-size: 13px;
-                }
-                QPushButton:hover { background: rgba(255,255,255,14); }
-            """)
-            self._voice_status.setText("")
-            self._notch.stop_voice_capture()
+    def _scan_existing(self):
+        # clear old ones
+        for thumb in self._thumbnails:
+            self._grid.removeWidget(thumb)
+            thumb.deleteLater()
+        self._thumbnails.clear()
 
-    def _on_open(self, card: CaptureCard):
-        self._notch.open_capture(card.record)
-
-    def _on_copy(self, card: CaptureCard):
-        self._notch.copy_capture_code(card.record)
-
-    def _on_send(self, card: CaptureCard):
-        self._notch.send_capture_to_agent(card.record)
-
-    def on_voice_result(self, text: str):
-        self._voice_status.setText(f"\u2713 {text[:30]}...")
-        self._voice_status.setStyleSheet("color: #34D399; font-size: 9px;")
-        self._voice_btn.setChecked(False)
-
-    def on_voice_error(self, msg: str):
-        self._voice_status.setText(f"\u2717 {msg}")
-        self._voice_status.setStyleSheet("color: #EF4444; font-size: 9px;")
-        QTimer.singleShot(3000, lambda: self._voice_status.setText(""))
-        self._voice_btn.setChecked(False)
-
-    def update_card_status(self, record: "CaptureRecord"):
-        for card in self._cards:
-            if card.record.id == record.id:
-                card.record.agentation_status = record.agentation_status
-                break
-
-
-# ---------------------------------------------------------------------------
-# SessionView  – Agentation session management
-# ---------------------------------------------------------------------------
-class SessionView(QWidget):
-    def __init__(self, notch: "DynamicNotch"):
-        super().__init__()
-        self._notch = notch
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 8, 16, 12)
-        layout.setSpacing(8)
-
-        # -- Header --
-        hdr = QLabel("Agentation Session")
-        hdr.setStyleSheet("color: rgba(255,255,255,160); font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
-        layout.addWidget(hdr)
-
-        self._status_row = QHBoxLayout()
-        self._status_dot = QLabel("○")
-        self._status_dot.setStyleSheet("color: #6B7280; font-size: 10px;")
-        self._status_row.addWidget(self._status_dot)
-        self._status_text = QLabel("Disconnected")
-        self._status_text.setStyleSheet("color: rgba(255,255,255,120); font-size: 11px;")
-        self._status_row.addWidget(self._status_text)
-        self._status_row.addStretch()
-        layout.addLayout(self._status_row)
-
-        # -- Session controls --
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(6)
-
-        self._start_btn = QPushButton("Start Task")
-        self._start_btn.setStyleSheet("""
-            QPushButton {
-                color: #7DD3FC;
-                background: rgba(125,211,252,12);
-                border: 1px solid rgba(125,211,252,25);
-                border-radius: 12px;
-                padding: 6px 16px;
-                font-size: 10px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: rgba(125,211,252,20); }
-        """)
-        self._start_btn.clicked.connect(self._on_start)
-        ctrl_row.addWidget(self._start_btn)
-
-        self._close_btn = QPushButton("Close Task")
-        self._close_btn.setStyleSheet("""
-            QPushButton {
-                color: rgba(255,255,255,120);
-                background: rgba(255,255,255,8);
-                border: 1px solid rgba(255,255,255,12);
-                border-radius: 12px;
-                padding: 6px 16px;
-                font-size: 10px;
-                font-weight: 500;
-            }
-            QPushButton:hover { color: #EF4444; background: rgba(239,68,68,12); border-color: rgba(239,68,68,25); }
-        """)
-        self._close_btn.clicked.connect(self._on_close)
-        self._close_btn.setEnabled(False)
-        ctrl_row.addWidget(self._close_btn)
-
-        ctrl_row.addStretch()
-
-        self._session_id_label = QLabel("")
-        self._session_id_label.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-        ctrl_row.addWidget(self._session_id_label)
-
-        layout.addLayout(ctrl_row)
-
-        # -- Send mode toggle --
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
-        mode_lbl = QLabel("Send Mode:")
-        mode_lbl.setStyleSheet("color: rgba(255,255,255,120); font-size: 10px;")
-        mode_row.addWidget(mode_lbl)
-
-        self._auto_toggle = QPushButton("Auto")
-        self._auto_toggle.setCheckable(True)
-        self._auto_toggle.setStyleSheet("""
-            QPushButton {
-                color: rgba(255,255,255,100);
-                background: rgba(255,255,255,8);
-                border: 1px solid rgba(255,255,255,12);
-                border-radius: 10px;
-                padding: 3px 14px;
-                font-size: 10px;
-                font-weight: 500;
-            }
-            QPushButton:checked {
-                color: #7DD3FC;
-                background: rgba(125,211,252,15);
-                border: 1px solid rgba(125,211,252,30);
-            }
-            QPushButton:hover { background: rgba(255,255,255,12); }
-        """)
-        self._auto_toggle.toggled.connect(self._on_auto_toggle)
-        mode_row.addWidget(self._auto_toggle)
-
-        mode_row.addStretch()
-        self._queue_badge = QLabel("")
-        self._queue_badge.setStyleSheet("color: #F59E0B; font-size: 10px; font-weight: 600;")
-        mode_row.addWidget(self._queue_badge)
-        layout.addLayout(mode_row)
-
-        # -- Annotation queue (manual mode) --
-        self._queue_scroll = QScrollArea()
-        self._queue_scroll.setWidgetResizable(True)
-        self._queue_scroll.setMaximumHeight(100)
-        self._queue_scroll.setStyleSheet("""
-            QScrollArea { background: rgba(255,255,255,4); border: 1px solid rgba(255,255,255,8); border-radius: 8px; }
-            QScrollBar:vertical { width: 3px; background: transparent; }
-            QScrollBar::handle:vertical { background: rgba(255,255,255,20); border-radius: 2px; }
-        """)
-        self._queue_w = QWidget()
-        self._queue_w.setStyleSheet("background: transparent;")
-        self._queue_layout = QVBoxLayout(self._queue_w)
-        self._queue_layout.setContentsMargins(8, 4, 8, 4)
-        self._queue_layout.setSpacing(2)
-        self._queue_scroll.setWidget(self._queue_w)
-        layout.addWidget(self._queue_scroll)
-
-        # -- Send / Request buttons --
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
-
-        self._send_btn = QPushButton("Send to Agentation")
-        self._send_btn.setStyleSheet("""
-            QPushButton {
-                color: white;
-                background: rgba(125,211,252,25);
-                border: 1px solid rgba(125,211,252,40);
-                border-radius: 14px;
-                padding: 6px 18px;
-                font-size: 10px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: rgba(125,211,252,35); }
-            QPushButton:disabled { color: rgba(255,255,255,40); background: rgba(255,255,255,6); border-color: rgba(255,255,255,8); }
-        """)
-        self._send_btn.clicked.connect(self._on_send)
-        self._send_btn.setEnabled(False)
-        btn_row.addWidget(self._send_btn)
-
-        self._request_btn = QPushButton("Request Agent")
-        self._request_btn.setStyleSheet("""
-            QPushButton {
-                color: #34D399;
-                background: rgba(52,211,153,12);
-                border: 1px solid rgba(52,211,153,25);
-                border-radius: 14px;
-                padding: 6px 18px;
-                font-size: 10px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: rgba(52,211,153,20); }
-            QPushButton:disabled { color: rgba(255,255,255,40); background: rgba(255,255,255,6); border-color: rgba(255,255,255,8); }
-        """)
-        self._request_btn.clicked.connect(self._on_request)
-        self._request_btn.setEnabled(False)
-        btn_row.addWidget(self._request_btn)
-
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        # -- Web Inspect button --
-        web_row = QHBoxLayout()
-        web_row.setSpacing(6)
-        self._web_inspect_btn = QPushButton("🔍 Web Inspect (Test)")
-        self._web_inspect_btn.setStyleSheet("""
-            QPushButton {
-                color: #A78BFA;
-                background: rgba(167,139,250,10);
-                border: 1px solid rgba(167,139,250,20);
-                border-radius: 12px;
-                padding: 4px 14px;
-                font-size: 9px;
-                font-weight: 500;
-            }
-            QPushButton:hover { background: rgba(167,139,250,18); }
-            QPushButton:disabled { color: rgba(255,255,255,30); background: rgba(255,255,255,4); border-color: transparent; }
-        """)
-        self._web_inspect_btn.clicked.connect(self._on_web_inspect)
-        self._web_inspect_btn.setEnabled(True)
-        web_row.addWidget(self._web_inspect_btn)
-
-        self._web_status_label = QLabel("")
-        self._web_status_label.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-        web_row.addWidget(self._web_status_label)
-
-        web_row.addStretch()
-        layout.addLayout(web_row)
-
-        # -- Status summary --
-        summary_hdr = QLabel("Annotation Status")
-        summary_hdr.setStyleSheet("color: rgba(255,255,255,120); font-size: 9px; font-weight: 600; letter-spacing: 0.5px;")
-        layout.addWidget(summary_hdr)
-
-        self._summary_grid = QGridLayout()
-        self._summary_grid.setSpacing(4)
-        self._summary_widgets = {}
-        for label, color, key in [
-            ("Pending", "#3B82F6", "pending"),
-            ("Acknowledged", "#F59E0B", "acknowledged"),
-            ("Resolved", "#22C55E", "resolved"),
-            ("Dismissed", "#6B7280", "dismissed"),
-        ]:
-            lbl = QLabel(f"{label}:")
-            lbl.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: 600;")
-            val = QLabel("0")
-            val.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 700;")
-            self._summary_widgets[key] = val
-            row = len(self._summary_widgets) // 2
-            col = (len(self._summary_widgets) - 1) % 2 * 2
-            self._summary_grid.addWidget(lbl, row, col)
-            self._summary_grid.addWidget(val, row, col + 1)
-        layout.addLayout(self._summary_grid)
-
-        layout.addStretch()
-
-        # -- Notification / error label --
-        self._notif_label = QLabel("")
-        self._notif_label.setStyleSheet("color: rgba(255,255,255,80); font-size: 9px;")
-        self._notif_label.setWordWrap(True)
-        layout.addWidget(self._notif_label)
-
-        # Initial state
-        self._queue_scroll.hide()
-
-    # -- Public API called by DynamicNotch --
-
-    def set_agentation_status(self, available: bool):
-        if available:
-            self._status_dot.setStyleSheet("color: #22C55E; font-size: 10px;")
-            self._status_dot.setText("●")
-            self._status_text.setText("Agentation MCP connected")
-            self._status_text.setStyleSheet("color: rgba(255,255,255,160); font-size: 11px;")
-        else:
-            self._status_dot.setStyleSheet("color: #EF4444; font-size: 10px;")
-            self._status_dot.setText("●")
-            self._status_text.setText("Agentation MCP offline")
-            self._status_text.setStyleSheet("color: rgba(239,68,68,100); font-size: 11px;")
-
-    def on_session_started(self, session: dict):
-        self._start_btn.setEnabled(False)
-        self._close_btn.setEnabled(True)
-        self._send_btn.setEnabled(True)
-        self._request_btn.setEnabled(True)
-        sid = session.get("id", "")
-        self._session_id_label.setText(f"ID: {sid[:12]}...")
-        self._notif_label.setText("Session active — capturing to Agentation")
-        self._notif_label.setStyleSheet("color: #7DD3FC; font-size: 9px;")
-
-    def on_session_closed(self):
-        self._start_btn.setEnabled(True)
-        self._close_btn.setEnabled(False)
-        self._send_btn.setEnabled(False)
-        self._request_btn.setEnabled(False)
-        self._session_id_label.setText("")
-        self._clear_queue_display()
-        self._queue_scroll.hide()
-        for w in self._summary_widgets.values():
-            w.setText("0")
-        self._notif_label.setText("")
-
-    def update_queue(self, count: int):
-        if count > 0:
-            self._queue_badge.setText(f"📦 {count} queued")
-            self._queue_scroll.show()
-        else:
-            self._queue_badge.setText("")
-            self._queue_scroll.hide()
-
-    def update_status_summary(self, summary: dict, pending: list):
-        for key, val in self._summary_widgets.items():
-            val.setText(str(summary.get(key, 0)))
-        total = summary.get("total", 0)
-        if total > 0 and summary.get("resolved", 0) == total:
-            self._notif_label.setText("✅ All annotations resolved")
-            self._notif_label.setStyleSheet("color: #22C55E; font-size: 9px;")
-
-    def show_error(self, msg: str):
-        self._notif_label.setText(f"⚠ {msg}")
-        self._notif_label.setStyleSheet("color: #EF4444; font-size: 9px;")
-
-    def show_notification(self, msg: str):
-        self._notif_label.setText(f"✓ {msg}")
-        self._notif_label.setStyleSheet("color: #34D399; font-size: 9px;")
-
-    def _clear_queue_display(self):
-        while self._queue_layout.count() > 0:
-            item = self._queue_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    # -- Internal callbacks --
-
-    def _on_start(self):
-        self._notch.start_agentation_session()
-
-    def _on_close(self):
-        self._notch.close_agentation_session()
-
-    def _on_send(self):
-        self._notch.send_annotations_to_agent()
-
-    def _on_request(self):
-        self._notch.send_annotations_to_agent()
-
-    def _on_auto_toggle(self, checked):
-        self._notch.set_auto_send(checked)
-        if checked and self._notch._session_id:
-            self._notch._flush_queue()
-
-    def _on_web_inspect(self):
-        """Test web inspect at center of screen."""
-        screen = QApplication.primaryScreen()
-        if not screen:
-            self._web_status_label.setText("No screen")
+        screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+        if not os.path.isdir(screenshots_dir):
             return
-        ag = screen.availableGeometry()
-        cx, cy = ag.center().x(), ag.center().y()
-        self._web_status_label.setText("Inspecting...")
-        self._web_status_label.setStyleSheet("color: #F59E0B; font-size: 9px;")
-        QApplication.processEvents()
+        for fn in sorted(os.listdir(screenshots_dir), reverse=True):
+            if fn.lower().endswith((".png", ".jpg", ".jpeg")):
+                self._add_thumbnail(os.path.join(screenshots_dir, fn))
 
-        result = self._notch.web_inspect_at(cx, cy)
-        if result and result.get("status") == "ok":
-            el = result.get("element", {})
-            sel = el.get("selector", "?")
-            comp = el.get("reactComponents", "")
-            self._web_status_label.setText(f"Found: {sel}")
-            self._web_status_label.setStyleSheet("color: #22C55E; font-size: 9px;")
-            self.show_notification(f"React: {comp[:60]}" if comp else f"Element: {sel[:60]}")
-        elif result and result.get("error"):
-            self._web_status_label.setText(f"Error: {result['error'][:40]}")
-            self._web_status_label.setStyleSheet("color: #EF4444; font-size: 9px;")
-        else:
-            self._web_status_label.setText("No response")
-            self._web_status_label.setStyleSheet("color: #EF4444; font-size: 9px;")
+    def _add_thumbnail(self, path):
+        thumb = ScreenshotThumbnail(path)
+        thumb.deleted.connect(self._remove_thumbnail)
+        self._thumbnails.append(thumb)
+        row = (len(self._thumbnails) - 1) // 3
+        col = (len(self._thumbnails) - 1) % 3
+        self._grid.addWidget(thumb, row, col)
+
+    def _remove_thumbnail(self, thumb):
+        self._grid.removeWidget(thumb)
+        self._thumbnails.remove(thumb)
+        thumb.deleteLater()
 
 
 # ---------------------------------------------------------------------------
 # DynamicNotch  – main overlay widget
 # ---------------------------------------------------------------------------
 class DynamicNotch(QWidget):
-    from agentation_client import AgentationClient, AgentationError
-    from capture_store import CaptureRecord, CaptureStore
-    from voice_input import VoiceInput
-
     def __init__(self, server: AgentServer = None):
         super().__init__()
         self._server = server
@@ -1152,32 +695,10 @@ class DynamicNotch(QWidget):
         self._idle_rect = QRect()
         self._expanded_rect = QRect()
 
-        # -- Agentation integration state --
-        self._agentation = AgentationClient()
-        self._agentation_available = False
-        self._session_id = None
-        self._session_url = ""
-        self._auto_send = False
-        self._annotation_queue: list[dict] = []  # unsent annotations (manual mode)
-        self._annotation_statuses: dict[str, str] = {}  # annotation_id -> status
-
-        self._capture_store = CaptureStore()
-        self._voice = VoiceInput()
-        self._voice.result_ready.connect(self._on_voice_result)
-        self._voice.error.connect(self._on_voice_error)
-
         self._setup_window()
         self._build_ui()
         self._position_idle()
         self._anim_group = None
-
-        # -- Agentation status poll timer --
-        self._annotation_timer = QTimer(self)
-        self._annotation_timer.timeout.connect(self._poll_annotation_status)
-        self._annotation_timer.start(4000)
-
-        # -- Initial health check --
-        QTimer.singleShot(1000, self._check_agentation_health)
 
     # -- property for border-radius interpolation --
     def get_anim_progress(self):
@@ -1282,7 +803,7 @@ class DynamicNotch(QWidget):
         tb_l.setSpacing(4)
 
         self._tab_btns = {}
-        for name in ("Home", "Agents", "Captures", "Session"):
+        for name in ("Home", "Agents", "Screenshots"):
             btn = QPushButton(name)
             btn.setCheckable(True)
             btn.setStyleSheet(PILL_STYLE.format(r=12, p=4))
@@ -1314,12 +835,10 @@ class DynamicNotch(QWidget):
         self._content_stack.setStyleSheet("background: transparent;")
         self._home_view = HomeView()
         self._agents_view = AgentsView()
-        self._captures_view = CapturesView(self)
-        self._session_view = SessionView(self)
+        self._screens_view = ScreenshotsView()
         self._content_stack.addWidget(self._home_view)
         self._content_stack.addWidget(self._agents_view)
-        self._content_stack.addWidget(self._captures_view)
-        self._content_stack.addWidget(self._session_view)
+        self._content_stack.addWidget(self._screens_view)
         cl.addWidget(self._content_stack, 1)
 
         self._main_layout.addWidget(self._container)
@@ -1365,7 +884,7 @@ class DynamicNotch(QWidget):
         self._tab_bar.show()
         self._content_stack.show()
 
-        idx = {"home": 0, "agents": 1, "captures": 2, "session": 3}.get(tab, 0)
+        idx = {"home": 0, "agents": 1, "screenshots": 2}.get(tab, 0)
         self._content_stack.setCurrentIndex(idx)
         for n, btn in self._tab_btns.items():
             btn.setChecked(n.lower() == tab)
@@ -1374,8 +893,7 @@ class DynamicNotch(QWidget):
         sizes = {
             "home": (EXPANDED_W, EXPANDED_H),
             "agents": (AGENTS_W, AGENTS_H),
-            "captures": (SCREENSHOTS_W, SCREENSHOTS_H),
-            "session": (440, 420),
+            "screenshots": (SCREENSHOTS_W, SCREENSHOTS_H),
         }
         self._expanded_size = sizes.get(tab, (EXPANDED_W, EXPANDED_H))
         self._animate_to(self._calc_expanded_rect(), 1.0)
@@ -1439,7 +957,7 @@ class DynamicNotch(QWidget):
         else:
             self._settings_btn.setStyleSheet(self._settings_btn.styleSheet().replace("color: rgba(255,255,255,100);", "color: white;"))
             self._state = "settings"
-            sizes = {"home": (EXPANDED_W, EXPANDED_H), "agents": (AGENTS_W, AGENTS_H), "captures": (SCREENSHOTS_W, SCREENSHOTS_H)}
+            sizes = {"home": (EXPANDED_W, EXPANDED_H), "agents": (AGENTS_W, AGENTS_H), "screenshots": (SCREENSHOTS_W, SCREENSHOTS_H)}
             self._expanded_size = (SETTINGS_W, SETTINGS_H)
             self._animate_to(self._calc_expanded_rect(), 1.0)
 
@@ -1459,286 +977,3 @@ class DynamicNotch(QWidget):
 
     def update_status(self, text):
         self._status_label.setText(text)
-
-    # ------------------------------------------------------------------
-    # Agentation Integration
-    # ------------------------------------------------------------------
-
-    def _check_agentation_health(self):
-        try:
-            self._agentation.health()
-            self._agentation_available = True
-            self._session_view.set_agentation_status(True)
-        except AgentationError:
-            self._agentation_available = False
-            self._session_view.set_agentation_status(False)
-
-    def _poll_annotation_status(self):
-        if not self._session_id or not self._agentation_available:
-            return
-        try:
-            pending = self._agentation.get_pending(self._session_id)
-            pending_ids = {a["id"] for a in pending}
-            for a in pending:
-                self._annotation_statuses[a["id"]] = a.get("status", "pending")
-            resolved_ids = set(self._annotation_statuses.keys()) - pending_ids
-            summary = {"pending": len(pending_ids), "acknowledged": 0, "resolved": 0, "dismissed": 0, "total": len(self._annotation_statuses)}
-            for aid, st in self._annotation_statuses.items():
-                if st == "acknowledged":
-                    summary["acknowledged"] += 1
-                elif st == "resolved":
-                    summary["resolved"] += 1
-                elif st == "dismissed":
-                    summary["dismissed"] += 1
-            self._session_view.update_status_summary(summary, pending)
-        except AgentationError:
-            pass
-
-    # -- Session lifecycle --
-
-    def start_agentation_session(self, url: str = "bluely://session", project_name: str = ""):
-        try:
-            session = self._agentation.create_session(url, project_id=project_name or None)
-            self._session_id = session["id"]
-            self._session_url = url
-            self._annotation_statuses.clear()
-            self._annotation_queue.clear()
-            self._session_view.on_session_started(session)
-            self._status_label.setText(f"● Session {session['id'][:8]}")
-        except AgentationError as e:
-            self._session_view.show_error(f"Failed to create session: {e}")
-
-    def close_agentation_session(self):
-        if not self._session_id:
-            return
-        try:
-            self._agentation.close_session(self._session_id)
-        except AgentationError:
-            pass
-        self._session_id = None
-        self._session_url = ""
-        self._annotation_statuses.clear()
-        self._annotation_queue.clear()
-        self._session_view.on_session_closed()
-        self._status_label.setText("Listening...")
-
-    # -- Sending annotations --
-
-    def queue_annotation(self, annotation_data: dict):
-        self._annotation_queue.append(annotation_data)
-        self._session_view.update_queue(len(self._annotation_queue))
-        if self._auto_send and self._session_id:
-            self._flush_queue()
-
-    def _flush_queue(self):
-        if not self._session_id or not self._annotation_queue:
-            return
-        batch = list(self._annotation_queue)
-        self._annotation_queue.clear()
-        self._session_view.update_queue(0)
-        for item in batch:
-            try:
-                result = self._agentation.add_annotation(self._session_id, item)
-                if result and "id" in result:
-                    self._annotation_statuses[result["id"]] = "pending"
-            except AgentationError as e:
-                self._session_view.show_error(f"Send failed: {e}")
-        self._poll_annotation_status()
-
-    def send_annotations_to_agent(self):
-        self._flush_queue()
-        if self._session_id:
-            try:
-                resp = self._agentation.request_action(self._session_id, "Annotations ready for review")
-                self._session_view.show_notification(f"Sent to agent ({resp.get('delivered', {}).get('total', 0)} endpoints)")
-            except AgentationError as e:
-                self._session_view.show_error(f"Action request failed: {e}")
-
-    def set_auto_send(self, enabled: bool):
-        self._auto_send = enabled
-
-    # ------------------------------------------------------------------
-    # Capture Store
-    # ------------------------------------------------------------------
-
-    def get_capture_store(self) -> CaptureStore:
-        return self._capture_store
-
-    def do_capture(self, annotation_text: str = ""):
-        cursor_pos = QCursor.pos()
-        cx, cy = cursor_pos.x(), cursor_pos.y()
-
-        import mss
-        from PIL import Image
-        import datetime
-
-        os.makedirs("screenshots", exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join("screenshots", f"capture_{ts}.png")
-
-        with mss.mss() as sct:
-            monitor = sct.monitors[1]
-            img = sct.grab(monitor)
-            pil_img = Image.frombytes("RGB", img.size, img.rgb)
-            pil_img.save(path, "PNG")
-
-        web_data = self.web_inspect_at(cx, cy)
-
-        record = CaptureRecord(
-            id=ts,
-            timestamp=ts,
-            screenshot_path=path,
-            annotation_text=annotation_text,
-            cursor_x=cx,
-            cursor_y=cy,
-        )
-        if web_data and web_data.get("status") == "ok":
-            el = web_data.get("element", {})
-            record.element_selector = el.get("selector", "")
-            record.element_path = el.get("elementPath", "")
-            record.react_components = el.get("reactComponents", "")
-            record.computed_styles = json.dumps(el.get("computedStyles", {}))
-            record.accessibility = json.dumps(el.get("accessibility", {}))
-            if el.get("boundingBox"):
-                record.bounding_box = el["boundingBox"]
-            if el.get("text"):
-                record.selected_text = el["text"]
-
-        self._capture_store.add(record)
-        self._captures_view.add_capture(record)
-
-        if self._session_id:
-            self._queue_capture_as_annotation(record)
-
-        self._session_view.show_notification(f"Captured: {os.path.basename(path)}")
-
-    def _queue_capture_as_annotation(self, record: CaptureRecord):
-        img_url = f"http://127.0.0.1:5001/screenshots/{os.path.basename(record.screenshot_path)}"
-        annotation = {
-            "x": record.cursor_x,
-            "y": record.cursor_y,
-            "comment": f"![screenshot]({img_url})" + (f"\n\n{record.annotation_text}" if record.annotation_text else ""),
-            "element": record.element_selector or "web_page",
-            "elementPath": record.element_path or record.screenshot_path,
-            "selectedText": record.annotation_text or record.selected_text or "",
-            "kind": "feedback",
-        }
-        if record.bounding_box:
-            annotation["boundingBox"] = record.bounding_box
-        if record.computed_styles:
-            annotation["computedStyles"] = record.computed_styles
-        if record.react_components:
-            annotation["reactComponents"] = record.react_components
-        if record.accessibility:
-            annotation["accessibility"] = record.accessibility
-
-        self.queue_annotation(annotation)
-        record.agentation_status = "sent"
-        self._capture_store.update(record)
-        self._captures_view.update_card_status(record)
-
-    def open_capture(self, record: CaptureRecord):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(record.screenshot_path))
-
-    def copy_capture_code(self, record: CaptureRecord):
-        clipboard = QApplication.clipboard()
-        clipboard.setText(record.formatted_context())
-        self._session_view.show_notification("Capture context copied to clipboard")
-
-    def send_capture_to_agent(self, record: CaptureRecord):
-        if not self._session_id:
-            self._session_view.show_error("No active session. Start a task first.")
-            return
-        self._queue_capture_as_annotation(record)
-        if self._session_id:
-            try:
-                resp = self._agentation.request_action(self._session_id, "Annotations ready for review")
-                self._session_view.show_notification(f"Capture sent ({resp.get('delivered', {}).get('total', 0)} endpoints)")
-            except AgentationError as e:
-                self._session_view.show_error(f"Action request failed: {e}")
-
-    # ------------------------------------------------------------------
-    # Voice Capture
-    # ------------------------------------------------------------------
-
-    def start_voice_capture(self):
-        self._voice.start_listening()
-
-    def stop_voice_capture(self):
-        self._voice.stop_listening()
-
-    def _on_voice_result(self, text: str):
-        self._captures_view.on_voice_result(text)
-        self.do_capture(annotation_text=text)
-
-    def _on_voice_error(self, msg: str):
-        self._captures_view.on_voice_error(msg)
-
-    # ------------------------------------------------------------------
-    # Web Inspect  (browser extension via Flask)
-    # ------------------------------------------------------------------
-
-    def web_inspect_at(self, x: int, y: int) -> dict | None:
-        """Inspect web element at screen coordinates via browser extension."""
-        try:
-            import urllib.request as _req
-            body = json.dumps({"x": x, "y": y}).encode()
-            resp = _req.urlopen(
-                _req.Request(
-                    "http://127.0.0.1:5001/inspect",
-                    data=body,
-                    headers={"Content-Type": "application/json"},
-                ),
-                timeout=6,
-            )
-            return json.loads(resp.read().decode())
-        except Exception:
-            return None
-
-    def capture_with_web_inspect(self, screenshot_b64: str, cursor_x: int, cursor_y: int, annotation_text: str = ""):
-        """Capture a screenshot + web inspect at cursor, then queue annotation."""
-        # Save screenshot via Flask
-        try:
-            import urllib.request as _req
-            body = json.dumps({"image": screenshot_b64, "annotation": annotation_text}).encode()
-            resp = _req.urlopen(
-                _req.Request(
-                    "http://127.0.0.1:5001/screenshots/save",
-                    data=body,
-                    headers={"Content-Type": "application/json"},
-                ),
-                timeout=10,
-            )
-            saved = json.loads(resp.read().decode())
-        except Exception as e:
-            self._session_view.show_error(f"Screenshot save failed: {e}")
-            return
-
-        # Build annotation payload
-        annotation = {
-            "x": cursor_x,
-            "y": cursor_y,
-            "comment": f"![screenshot](http://127.0.0.1:5001{saved['url']})\n\n{annotation_text}" if annotation_text else f"![screenshot](http://127.0.0.1:5001{saved['url']})",
-            "element": "web_page",
-            "elementPath": saved["path"],
-            "boundingBox": {"x": cursor_x - 50, "y": cursor_y - 50, "width": 100, "height": 100},
-            "selectedText": annotation_text or "",
-            "kind": "feedback",
-        }
-
-        # Try web inspect enrichment
-        web_data = self.web_inspect_at(cursor_x, cursor_y)
-        if web_data and web_data.get("status") == "ok":
-            el = web_data.get("element", {})
-            annotation["element"] = el.get("selector", "web_page")
-            annotation["elementPath"] = el.get("elementPath", saved["path"])
-            annotation["computedStyles"] = json.dumps(el.get("computedStyles", {}))
-            annotation["reactComponents"] = el.get("reactComponents", "")
-            annotation["accessibility"] = json.dumps(el.get("accessibility", {}))
-            if el.get("boundingBox"):
-                annotation["boundingBox"] = el["boundingBox"]
-            if el.get("text"):
-                annotation["selectedText"] = el["text"]
-            self._session_view.show_notification("Web element captured")
-
-        self.queue_annotation(annotation)

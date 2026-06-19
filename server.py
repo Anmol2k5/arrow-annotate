@@ -17,6 +17,7 @@ from flask import Flask, jsonify, request, Response, send_from_directory
 import websockets
 
 from hybrid_pointer import find_target
+from highlight_resolver import HighlightResolver
 
 SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 
@@ -80,11 +81,14 @@ class OSController:
     def type(cls, target: str):
         """Type a string of text character-by-character."""
         for ch in target:
-            vk = cls._VK.get(ch.lower(), 0)
-            if vk:
-                cls._key_down(vk)
+            if ch == '\n':
+                cls._key_down(cls._VK['enter'])
                 time.sleep(0.01)
-                cls._key_up(vk)
+                cls._key_up(cls._VK['enter'])
+            elif ch == '\t':
+                cls._key_down(cls._VK['tab'])
+                time.sleep(0.01)
+                cls._key_up(cls._VK['tab'])
             else:
                 # SendInput for arbitrary Unicode characters
                 cls._send_unicode(ch)
@@ -171,6 +175,9 @@ class OSController:
 # ---------------------------------------------------------------------------
 # Flask application
 # ---------------------------------------------------------------------------
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 app = Flask(__name__)
 app.config["AGENT_NAME"] = "bluely-agent"
@@ -369,11 +376,15 @@ def execute_batch():
     actions = data.get("actions", [])
     results = []
 
+    has_error = False
     for action in actions:
         resp = execute_inner(action)
         results.append(resp)
+        if resp.get("status") == "error":
+            has_error = True
 
-    return jsonify({"status": "ok", "count": len(results), "results": results})
+    status_code = 400 if has_error else 200
+    return jsonify({"status": "error" if has_error else "ok", "count": len(results), "results": results}), status_code
 
 
 def execute_inner(action_data):
@@ -432,6 +443,7 @@ class WebSocketBridge:
         self._ws = None
         self._pending: dict[str, Future] = {}
         self._ready = threading.Event()
+        self._pending_lock = threading.Lock()
 
     def start(self):
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="WSBridge")
@@ -458,9 +470,11 @@ class WebSocketBridge:
             async for raw in websocket:
                 data = json.loads(raw)
                 msg_id = data.pop("id", None)
-                if msg_id and msg_id in self._pending:
-                    fut = self._pending.pop(msg_id)
-                    fut.set_result(data)
+                if msg_id:
+                    with self._pending_lock:
+                        fut = self._pending.pop(msg_id, None)
+                    if fut:
+                        fut.set_result(data)
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -473,7 +487,8 @@ class WebSocketBridge:
 
         msg_id = f"{time.monotonic_ns()}"
         fut: Future = Future()
-        self._pending[msg_id] = fut
+        with self._pending_lock:
+            self._pending[msg_id] = fut
 
         async def _send():
             await self._ws.send(json.dumps({
@@ -485,7 +500,8 @@ class WebSocketBridge:
         try:
             return fut.result(timeout=timeout)
         except TimeoutError:
-            self._pending.pop(msg_id, None)
+            with self._pending_lock:
+                self._pending.pop(msg_id, None)
             raise TimeoutError("Extension did not respond in time")
 
 
@@ -517,6 +533,156 @@ def inspect_web():
         return jsonify({"error": str(e)}), 503
     except TimeoutError as e:
         return jsonify({"error": str(e)}), 504
+
+
+# ---------------------------------------------------------------------------
+# Highlight endpoints  (TipTour-style "Focus Highlight" resolution)
+# ---------------------------------------------------------------------------
+
+@app.route("/highlight/resolve", methods=["POST"])
+def highlight_resolve():
+    """Resolve a highlighted screen region into source context.
+
+    Accepts: {
+        "rect": {"x": 0, "y": 0, "width": 100, "height": 200},
+        "source_file_path": "optional explicit path",
+        "selected_text": "optional text selection"
+    }
+    Returns: HighlightResolution with kind, confidence, tools, etc.
+    """
+    data = request.get_json(silent=True) or {}
+    rect_data = data.get("rect", {})
+    if not rect_data:
+        return jsonify({"error": "rect {x, y, width, height} required"}), 400
+
+    x = rect_data.get("x")
+    y = rect_data.get("y")
+    w = rect_data.get("width") or rect_data.get("w")
+    h = rect_data.get("height") or rect_data.get("h")
+    if x is None or y is None or w is None or h is None:
+        return jsonify({"error": "rect requires x, y, width, height"}), 400
+
+    bridge = app.config.get("WS_BRIDGE")
+    resolver = HighlightResolver(ws_bridge=bridge)
+    resolution = resolver.resolve(
+        rect=(int(x), int(y), int(w), int(h)),
+        explicit_file_path=data.get("source_file_path"),
+        selected_text=data.get("selected_text"),
+    )
+    return jsonify(resolution.to_dict())
+
+
+@app.route("/highlight/capture", methods=["POST"])
+def highlight_capture():
+    """Capture a highlighted screen region as a cropped screenshot.
+
+    Accepts: {
+        "rect": {"x": 0, "y": 0, "width": 100, "height": 200},
+        "annotation": "optional text annotation"
+    }
+    Returns: { "path": "...", "filename": "...", "url": "...", "resolution": {...} }
+    """
+    import mss
+    from PIL import Image
+
+    data = request.get_json(silent=True) or {}
+    rect_data = data.get("rect", {})
+    if not rect_data:
+        return jsonify({"error": "rect required"}), 400
+
+    x = rect_data.get("x", 0)
+    y = rect_data.get("y", 0)
+    w = rect_data.get("width") or rect_data.get("w", 0)
+    h = rect_data.get("height") or rect_data.get("h", 0)
+    if not w or not h:
+        return jsonify({"error": "rect must have non-zero width/height"}), 400
+
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"highlight_{ts}.png"
+    path = os.path.join(SCREENSHOTS_DIR, filename)
+
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        full = sct.grab(monitor)
+        pil_full = Image.frombytes("RGB", full.size, full.rgb)
+        cropped = pil_full.crop((int(x), int(y), int(x + w), int(y + h)))
+        cropped.save(path, "PNG")
+
+    bridge = app.config.get("WS_BRIDGE")
+    resolver = HighlightResolver(ws_bridge=bridge)
+    resolution = resolver.resolve(
+        rect=(int(x), int(y), int(w), int(h)),
+        explicit_file_path=data.get("source_file_path"),
+        selected_text=data.get("selected_text"),
+    )
+
+    return jsonify({
+        "path": os.path.abspath(path),
+        "filename": filename,
+        "url": f"/screenshots/{filename}",
+        "width": int(w),
+        "height": int(h),
+        "annotation": data.get("annotation", ""),
+        "resolution": resolution.to_dict(),
+    })
+
+
+@app.route("/highlight/execute", methods=["POST"])
+def highlight_execute():
+    """Execute an action scoped to a highlighted region.
+
+    Accepts: {
+        "rect": {"x": 0, "y": 0, "width": 100, "height": 200},
+        "action": { "type": "click|type|hotkey|edit|inspect", ... }
+    }
+    For positional actions (click), the highlight center is used as (x, y).
+    """
+    data = request.get_json(silent=True) or {}
+    rect_data = data.get("rect", {})
+    action_data = data.get("action", {})
+
+    if not rect_data:
+        return jsonify({"error": "rect required"}), 400
+    if not action_data:
+        return jsonify({"error": "action required"}), 400
+
+    x = rect_data.get("x", 0)
+    y = rect_data.get("y", 0)
+    w = rect_data.get("width") or rect_data.get("w", 0)
+    h = rect_data.get("height") or rect_data.get("h", 0)
+
+    action_type = action_data.get("type", "").strip().lower()
+
+    if action_type == "inspect":
+        cx = x + w // 2
+        cy = y + h // 2
+        bridge = app.config.get("WS_BRIDGE")
+        if not bridge or not bridge.connected:
+            return jsonify({"error": "Browser extension not connected"}), 503
+        try:
+            result = bridge.inspect(int(cx), int(cy))
+            return jsonify({"status": "ok", "element": result, "center": [cx, cy]})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    if action_type in ("click", "rightclick", "doubleclick"):
+        cx = data.get("x", x + w // 2)
+        cy = data.get("y", y + h // 2)
+        action_data["x"] = int(cx)
+        action_data["y"] = int(cy)
+
+    if action_type == "edit" or action_type == "select_all":
+        cx = x + w // 2
+        cy = y + h // 2
+        ctrl = app.config["OS_CTRL"]
+        ctrl.click(x=int(cx), y=int(cy))
+        from time import sleep
+        sleep(0.1)
+        ctrl.hotkey("ctrl+a")
+        return jsonify({"status": "ok", "action": "select_all", "at": [cx, cy]})
+
+    return execute_inner(action_data)
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 function inspectElement(x, y) {
-  const el = document.elementFromPoint(x, y);
-  if (!el) return { error: "No element found at coordinates" };
+  const borderX = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+  const borderY = Math.max(0, window.outerHeight - window.innerHeight - borderX);
+  
+  const vx = Math.round(x - window.screenX - borderX);
+  const vy = Math.round(y - window.screenY - borderY);
+
+  const el = document.elementFromPoint(vx, vy);
+  if (!el) return { error: `No element found at viewport (${vx}, ${vy}) screen (${x}, ${y})` };
 
   const selector = generateSelector(el);
   const rect = el.getBoundingClientRect();
