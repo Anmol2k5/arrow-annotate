@@ -1,333 +1,177 @@
-"""
-Highlight Overlay — Transparent full-screen drag-selection widget.
-
-Mirrors the TipTour "Focus Highlight" UX:
-  1. User holds hotkey → overlay appears (screen dims)
-  2. Click & drag → rubber-band selection rectangle
-  3. Release → selection rect emitted via signal
-  4. Escape → cancel
-
-Uses PyQt6, consistent with the DynamicNotch overlay in notch.py.
-"""
-
-from __future__ import annotations
-
-import logging
-from dataclasses import dataclass
-
-from PyQt6.QtCore import (
-    Qt, QRect, QPoint, QTimer, pyqtSignal,
-)
-from PyQt6.QtGui import (
-    QColor, QPainter, QPen, QBrush, QFont, QFontMetrics, QPaintEvent,
-    QKeyEvent, QMouseEvent, QCursor,
-)
-from PyQt6.QtWidgets import QWidget, QApplication
-
-log = logging.getLogger("bluely.highlight_overlay")
-
-# -- Design tokens (matching notch.py palette) --
-DIM_ALPHA = 130
-SELECTION_FILL = QColor(66, 133, 244, 50)
-SELECTION_BORDER = QColor(66, 133, 244, 220)
-INFO_BG = QColor(25, 25, 35, 210)
-INFO_TEXT = QColor(230, 230, 240)
-INFO_DIM = QColor(160, 160, 170)
-ACCENT_BLUE = QColor(66, 133, 244)
-HANDLE_COLOR = QColor(66, 133, 244, 200)
+import time
+import math
+from PyQt6.QtCore import Qt, QPointF, QTimer, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QPen, QApplication
+from PyQt6.QtWidgets import QWidget
 
 
-@dataclass
-class SelectionResult:
-    x: int
-    y: int
-    width: int
-    height: int
-    screen_rect: tuple[int, int, int, int]  # virtual screen bounds
-
-    @property
-    def normalized(self) -> tuple[int, int, int, int]:
-        """Always positive width/height regardless of drag direction."""
-        return (self.x, self.y, self.width, self.height)
-
-    def to_dict(self) -> dict:
-        return {
-            "x": self.x, "y": self.y,
-            "width": self.width, "height": self.height,
-        }
+class StrokePoint:
+    def __init__(self, point: QPointF):
+        self.point = point
+        self.timestamp = time.time()
 
 
 class SelectionOverlay(QWidget):
-    """Full-screen transparent overlay for rubber-band region selection.
-
-    Signals:
-        selection_complete(SelectionResult): emitted when user releases drag.
-        cancelled(): emitted when user presses Escape.
     """
-
-    selection_complete = pyqtSignal(object)  # SelectionResult
-    cancelled = pyqtSignal()
-
-    # ──────────────────────────────────────────────────────────────────
-    # Construction
-    # ──────────────────────────────────────────────────────────────────
+    Freehand neon drawing overlay.
+    Renamed to SelectionOverlay to match main.py imports without breaking, 
+    but functions as a freehand Neon drawing surface.
+    """
+    selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect
 
     def __init__(self):
         super().__init__()
-        self._selection_active = False
-        self._drag_start: QPoint | None = None
-        self._drag_current: QPoint | None = None
-        self._selection_rect: QRect | None = None
-        self._fade_opacity = 0.0
-        self._fade_timer = QTimer(self)
-        self._fade_timer.timeout.connect(self._fade_step)
-        self._visible_target = False
-
-        # Full virtual screen geometry
-        self._virtual_geometry = self._get_virtual_geometry()
-
-        self._setup_window()
-
-    def _setup_window(self):
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-            | Qt.WindowType.BypassWindowManagerHint
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setMouseTracking(False)
-        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        
+        self._points: list[StrokePoint] = []
+        self._is_drawing = False
+        self._active = False
+        
+        self._fade_timer = QTimer(self)
+        self._fade_timer.timeout.connect(self._update_fade)
+        self._fade_timer.start(16)  # ~60fps
+        
+        self._offset = QPointF(0, 0)
 
-    def _get_virtual_geometry(self) -> QRect:
-        """Return bounding rect of all screens."""
-        app = QApplication.instance()
-        if not app:
-            return QRect(0, 0, 1920, 1080)
-        geo = QRect()
-        for screen in app.screens():
-            geo = geo.united(screen.geometry())
-        return geo
-
-    # ──────────────────────────────────────────────────────────────────
-    # Show / hide with fade
-    # ──────────────────────────────────────────────────────────────────
+    def _update_geometry(self):
+        screens = QApplication.screens()
+        if screens:
+            geom = screens[0].geometry()
+            for s in screens[1:]:
+                geom = geom.united(s.geometry())
+            self.setGeometry(geom)
+            self._offset = QPointF(geom.topLeft())
 
     def show_overlay(self):
-        """Show the overlay with a fade-in."""
-        rect = self._virtual_geometry
-        self.setGeometry(rect)
-        self._visible_target = True
-        self._fade_opacity = 0.0
-        self._fade_timer.start(16)
+        """Called when hotkey is pressed."""
+        self._update_geometry()
+        self._active = True
+        self._points.clear()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.show()
         self.raise_()
         self.activateWindow()
-        self.setFocus()
 
     def hide_overlay(self):
-        """Hide the overlay immediately."""
-        self._visible_target = False
-        self._fade_opacity = 1.0
-        self._fade_timer.start(16)
-
-    def _fade_step(self):
-        step = 0.08
-        if self._visible_target:
-            self._fade_opacity = min(1.0, self._fade_opacity + step)
-            if self._fade_opacity >= 1.0:
-                self._fade_timer.stop()
+        """Called when hotkey is released."""
+        self._active = False
+        self._is_drawing = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        
+        # Calculate bounding box for capture
+        if self._points:
+            min_x = min(p.point.x() for p in self._points)
+            max_x = max(p.point.x() for p in self._points)
+            min_y = min(p.point.y() for p in self._points)
+            max_y = max(p.point.y() for p in self._points)
+            
+            # Map back to global coordinates
+            global_x = min_x + self._offset.x()
+            global_y = min_y + self._offset.y()
+            
+            pad = 100
+            rect = {
+                "x": max(0, int(global_x - pad)),
+                "y": max(0, int(global_y - pad)),
+                "width": int(max_x - min_x + pad * 2),
+                "height": int(max_y - min_y + pad * 2)
+            }
+            
+            # Mock SelectionResult object for main.py compatibility
+            class MockResult:
+                def __init__(self, r): self.r = r
+                def to_dict(self): return self.r
+                
+            self.selection_complete.emit(MockResult(rect))
         else:
-            self._fade_opacity = max(0.0, self._fade_opacity - step)
-            if self._fade_opacity <= 0.0:
-                self._fade_timer.stop()
-                self.hide()
-                self._reset_selection()
-        self.update()
+            # Full screen fallback
+            geom = self.geometry()
+            rect = {"x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height()}
+            
+            class MockResult:
+                def __init__(self, r): self.r = r
+                def to_dict(self): return self.r
+                
+            self.selection_complete.emit(MockResult(rect))
 
-    # ──────────────────────────────────────────────────────────────────
-    # Mouse events
-    # ──────────────────────────────────────────────────────────────────
-
-    def mousePressEvent(self, event: QMouseEvent | None):
-        if event and event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start = event.position().toPoint()
-            self._drag_current = self._drag_start
-            self._selection_active = True
-            self._selection_rect = QRect(self._drag_start, QPoint(0, 0))
-            self.setMouseTracking(True)
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_drawing = True
+            pt = event.globalPosition() - self._offset
+            self._points = [StrokePoint(pt)]
             self.update()
 
-    def mouseMoveEvent(self, event: QMouseEvent | None):
-        if event and self._selection_active and self._drag_start:
-            self._drag_current = event.position().toPoint()
-            self._update_selection_rect()
+    def mouseMoveEvent(self, event):
+        if self._is_drawing:
+            pt = event.globalPosition() - self._offset
+            
+            # Smoothing (moving average)
+            if self._points:
+                last_pt = self._points[-1].point
+                dist = math.hypot(pt.x() - last_pt.x(), pt.y() - last_pt.y())
+                if dist < 2.0:
+                    return
+                # Simple smoothing weight
+                pt = QPointF(last_pt.x() * 0.4 + pt.x() * 0.6, 
+                             last_pt.y() * 0.4 + pt.y() * 0.6)
+                             
+            self._points.append(StrokePoint(pt))
             self.update()
 
-    def mouseReleaseEvent(self, event: QMouseEvent | None):
-        if event and event.button() == Qt.MouseButton.LeftButton and self._selection_active:
-            self._selection_active = False
-            self.setMouseTracking(False)
-            self._drag_current = event.position().toPoint()
-            self._update_selection_rect()
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_drawing = False
 
-            if self._selection_rect and self._selection_rect.width() > 5 and self._selection_rect.height() > 5:
-                result = SelectionResult(
-                    x=self._selection_rect.x(),
-                    y=self._selection_rect.y(),
-                    width=self._selection_rect.width(),
-                    height=self._selection_rect.height(),
-                    screen_rect=(
-                        self._virtual_geometry.x(),
-                        self._virtual_geometry.y(),
-                        self._virtual_geometry.width(),
-                        self._virtual_geometry.height(),
-                    ),
-                )
-                self.selection_complete.emit(result)
-                self.hide_overlay()
-            else:
-                self._reset_selection()
-                self.update()
+    def _update_fade(self):
+        now = time.time()
+        orig_len = len(self._points)
+        # 2.0 second comet tail
+        self._points = [p for p in self._points if now - p.timestamp < 2.0]
+        
+        if len(self._points) != orig_len or self._points:
+            self.update()
+        elif not self._active and not self._points:
+            self.hide()
 
-    def keyPressEvent(self, event: QKeyEvent | None):
-        if event and event.key() == Qt.Key.Key_Escape:
-            self._selection_active = False
-            self.setMouseTracking(False)
-            self.cancelled.emit()
-            self.hide_overlay()
+    def paintEvent(self, event):
+        if len(self._points) < 2:
+            return
 
-    def _update_selection_rect(self):
-        if self._drag_start and self._drag_current:
-            x1 = min(self._drag_start.x(), self._drag_current.x())
-            y1 = min(self._drag_start.y(), self._drag_current.y())
-            x2 = max(self._drag_start.x(), self._drag_current.x())
-            y2 = max(self._drag_start.y(), self._drag_current.y())
-            self._selection_rect = QRect(x1, y1, x2 - x1, y2 - y1)
-
-    def _reset_selection(self):
-        self._selection_active = False
-        self._drag_start = None
-        self._drag_current = None
-        self._selection_rect = None
-        self.setMouseTracking(False)
-        self.update()
-
-    # ──────────────────────────────────────────────────────────────────
-    # Paint
-    # ──────────────────────────────────────────────────────────────────
-
-    def paintEvent(self, event: QPaintEvent | None):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        alpha = int(255 * self._fade_opacity)
-
-        # 1. Dim the screen
-        dim = QColor(0, 0, 0, int(DIM_ALPHA * self._fade_opacity))
-        painter.fillRect(self.rect(), dim)
-
-        if not self._selection_rect:
-            # Show instructions when no drag in progress
-            if self._fade_opacity > 0.5:
-                self._draw_instructions(painter, alpha)
-            return
-
-        # 2. Clear the selection area (cut-out effect)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        painter.fillRect(self._selection_rect, QColor(0, 0, 0, 0))
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-
-        # 3. Fill inside selection with subtle highlight
-        fill = QColor(SELECTION_FILL)
-        fill.setAlpha(int(fill.alpha() * self._fade_opacity))
-        painter.fillRect(self._selection_rect, fill)
-
-        # 4. Selection border
-        border_pen = QPen(SELECTION_BORDER, 2)
-        border_pen.setDashPattern([6, 3])
-        painter.setPen(border_pen)
-        painter.drawRect(self._selection_rect)
-
-        # 5. Corner handles
-        self._draw_handles(painter)
-
-        # 6. Info label (dimensions)
-        self._draw_dimension_label(painter, alpha)
-
-    def _draw_instructions(self, painter: QPainter, alpha: int):
-        font = QFont("Segoe UI", 14)
-        font.setWeight(400)
-        painter.setFont(font)
-
-        text = "Click and drag to select a region  ·  Esc to cancel"
-        fm = QFontMetrics(font)
-        tw = fm.horizontalAdvance(text)
-        th = fm.height()
-
-        pad = 20
-        bx = (self.width() - tw) // 2 - pad
-        by = self.height() // 2 - 80
-        bw = tw + pad * 2
-        bh = th + pad
-
-        bg = QColor(INFO_BG)
-        bg.setAlpha(int(bg.alpha() * self._fade_opacity))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(bx, by, bw, bh, 12, 12)
-
-        text_color = QColor(INFO_TEXT)
-        text_color.setAlpha(alpha)
-        painter.setPen(text_color)
-        painter.drawText(bx + pad, by + pad + fm.ascent(), text)
-
-    def _draw_handles(self, painter: QPainter):
-        if not self._selection_rect:
-            return
-        r = self._selection_rect
-        size = 8
-        half = size // 2
-        corners = [
-            QPoint(r.left(), r.top()),
-            QPoint(r.right(), r.top()),
-            QPoint(r.left(), r.bottom()),
-            QPoint(r.right(), r.bottom()),
-        ]
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(HANDLE_COLOR)
-        for pt in corners:
-            painter.drawEllipse(pt.x() - half, pt.y() - half, size, size)
-
-    def _draw_dimension_label(self, painter: QPainter, alpha: int):
-        if not self._selection_rect:
-            return
-        r = self._selection_rect
-        text = f"{r.width()} × {r.height()} px"
-        font = QFont("Segoe UI", 11)
-        font.setWeight(500)
-        painter.setFont(font)
-        fm = QFontMetrics(font)
-        tw = fm.horizontalAdvance(text)
-
-        pad = 10
-        label_w = tw + pad * 2
-        label_h = fm.height() + pad
-
-        bx = r.x() + (r.width() - label_w) // 2
-        by = r.y() + r.height() + 12
-
-        bg = QColor(INFO_BG)
-        bg.setAlpha(int(bg.alpha() * self._fade_opacity))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(bx, by, label_w, label_h, 8, 8)
-
-        text_color = QColor(INFO_DIM)
-        text_color.setAlpha(alpha)
-        painter.setPen(text_color)
-        painter.drawText(bx + pad, by + pad + fm.ascent(), text)
-
-
-__all__ = ["SelectionOverlay", "SelectionResult"]
+        now = time.time()
+        
+        for i in range(1, len(self._points)):
+            p1 = self._points[i-1]
+            p2 = self._points[i]
+            
+            age = now - p2.timestamp
+            if age > 2.0: 
+                continue
+                
+            alpha_ratio = max(0.0, 1.0 - (age / 2.0))
+            
+            # Render neon glow layers
+            # Outer shadow
+            pen_outer = QPen(QColor(167, 139, 250, int(25 * alpha_ratio)), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_outer)
+            painter.drawLine(p1.point, p2.point)
+            
+            # Inner shadow
+            pen_inner = QPen(QColor(167, 139, 250, int(80 * alpha_ratio)), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_inner)
+            painter.drawLine(p1.point, p2.point)
+            
+            # Core bright stroke
+            pen_core = QPen(QColor(230, 220, 255, int(255 * alpha_ratio)), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_core)
+            painter.drawLine(p1.point, p2.point)
+            
+        painter.end()

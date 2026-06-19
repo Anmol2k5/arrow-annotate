@@ -209,9 +209,10 @@ class ThinkingSpinnerWidget(QWidget):
 class ScreenshotThumbnail(QFrame):
     deleted = pyqtSignal(object)
 
-    def __init__(self, path, parent=None):
+    def __init__(self, path, annotation_text="", parent=None):
         super().__init__(parent)
         self._path = path
+        self._text = annotation_text
         self._preview = None
         self._setup_ui()
 
@@ -237,6 +238,12 @@ class ScreenshotThumbnail(QFrame):
         self._img_label.setFixedSize(122, 72)
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._img_label)
+        
+        if self._text:
+            text_lbl = QLabel(self._text)
+            text_lbl.setWordWrap(True)
+            text_lbl.setStyleSheet("color: #E2E8F0; font-size: 10px; font-weight: 500;")
+            layout.addWidget(text_lbl)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(0)
@@ -638,11 +645,21 @@ class ScreenshotsView(QWidget):
 
             with mss.mss() as sct:
                 monitor = sct.monitors[1]
-                img = sct.grab(monitor)
-                pil_img = Image.frombytes("RGB", img.size, img.rgb)
-                pil_img.save(path, "PNG")
+                sct_img = sct.grab(monitor)
+                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                img.save(path)
 
-            self._add_thumbnail(path)
+            from capture_store import CaptureStore, CaptureRecord
+            store = CaptureStore()
+            store.add(CaptureRecord(
+                id=ts,
+                timestamp=datetime.datetime.now().isoformat(),
+                screenshot_path=path,
+                annotation_text=""
+            ))
+
+            self._scan_existing()
+
         except Exception as e:
             QMessageBox.warning(self, "Capture Error", str(e))
 
@@ -658,15 +675,14 @@ class ScreenshotsView(QWidget):
             thumb.deleteLater()
         self._thumbnails.clear()
 
-        screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
-        if not os.path.isdir(screenshots_dir):
-            return
-        for fn in sorted(os.listdir(screenshots_dir), reverse=True):
-            if fn.lower().endswith((".png", ".jpg", ".jpeg")):
-                self._add_thumbnail(os.path.join(screenshots_dir, fn))
+        from capture_store import CaptureStore
+        store = CaptureStore()
+        for rec in store.get_all():
+            if os.path.exists(rec.screenshot_path):
+                self._add_thumbnail(rec.screenshot_path, rec.annotation_text)
 
-    def _add_thumbnail(self, path):
-        thumb = ScreenshotThumbnail(path)
+    def _add_thumbnail(self, path, text=""):
+        thumb = ScreenshotThumbnail(path, text)
         thumb.deleted.connect(self._remove_thumbnail)
         self._thumbnails.append(thumb)
         row = (len(self._thumbnails) - 1) // 3
