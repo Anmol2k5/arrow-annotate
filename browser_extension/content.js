@@ -33,6 +33,19 @@ function inspectElement(x, y) {
     reactComponents = getReactComponentTree(el);
   } catch (_) {}
 
+  let reactSource = null;
+  try {
+    reactSource = getReactSource(el);
+  } catch (_) {}
+
+  const arrowId = el.getAttribute("data-arrow-id") || "";
+  const testId =
+    el.getAttribute("data-testid") ||
+    el.getAttribute("data-test-id") ||
+    el.getAttribute("data-test") ||
+    "";
+  const route = window.location.pathname || "";
+
   const a11y = {
     role: el.getAttribute("role") || el.tagName.toLowerCase(),
     name:
@@ -67,6 +80,11 @@ function inspectElement(x, y) {
     },
     computedStyles,
     reactComponents,
+    reactSource,
+    arrowId,
+    testId,
+    route,
+    pageUrl: window.location.href || "",
     accessibility: a11y,
     viewport,
     text: el.textContent?.trim()?.slice(0, 200) || "",
@@ -148,4 +166,24 @@ function getReactComponentTree(el) {
     depth++;
   }
   return names.join(" > ");
+}
+
+function getReactSource(el) {
+  const fiberKey = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+  if (!fiberKey) return null;
+  let fiber = el[fiberKey];
+  let depth = 0;
+  while (fiber && depth < 30) {
+    const src = fiber._debugSource;
+    if (src && src.fileName) {
+      return {
+        fileName: src.fileName,
+        lineNumber: src.lineNumber,
+        columnNumber: src.columnNumber,
+      };
+    }
+    fiber = fiber._debugOwner || fiber.return;
+    depth++;
+  }
+  return null;
 }
