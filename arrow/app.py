@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QApplication
 
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
+from arrow.context.orchestrator import ContextOrchestrator
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
@@ -155,6 +156,10 @@ def main():
         )
         session.annotations = [source_ann]
 
+        # Resolve session context using ContextOrchestrator
+        orchestrator = ContextOrchestrator(server._ws_bridge)
+        orchestrator.resolve_session_context(session, raw_img)
+
         def _capture_task():
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
                 return
@@ -209,6 +214,10 @@ def main():
                 cursor_y=cursor_y,
                 bounding_box=rect,
                 window_title=window_title,
+                element_selector=session.source_anchor.get("metadata", {}).get("element_selector", "") if session.source_anchor else "",
+                element_path=session.source_anchor.get("metadata", {}).get("element_path", "") if session.source_anchor else "",
+                react_components=session.source_anchor.get("metadata", {}).get("react_components", "") if session.source_anchor else "",
+                selected_text=session.source_anchor.get("metadata", {}).get("selected_text", "") if session.source_anchor else "",
             )
             capture_store.add(record)
 
