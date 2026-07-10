@@ -1,5 +1,5 @@
-import json
 from arrow.storage.schemas import CaptureRecord
+
 
 def test_capture_record_serialization():
     data = {

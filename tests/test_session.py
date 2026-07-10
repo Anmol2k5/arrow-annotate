@@ -1,6 +1,9 @@
-import pytest
 import re
-from arrow.capture.session import SessionManager, CaptureState, generate_uuidv7
+
+import pytest
+
+from arrow.capture.session import CaptureState, SessionManager, generate_uuidv7
+
 
 def test_uuidv7_format():
     uid = generate_uuidv7()
