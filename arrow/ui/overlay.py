@@ -1,8 +1,9 @@
-import time
 import math
-from PyQt6.QtCore import Qt, QPointF, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPen, QApplication
-from PyQt6.QtWidgets import QWidget
+import time
+
+from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QWidget
 
 
 class StrokePoint:

@@ -18,7 +18,7 @@ import ctypes
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 log = logging.getLogger("bluely.highlight")
@@ -226,11 +226,7 @@ def _get_uia_info_at_point(cx: int, cy: int, pid: int | None = None
             return None
 
         if pid is not None:
-            try:
-                elem_pid = element.ProcessId
-                # Window pattern PID check — optional
-            except Exception:
-                pass
+            pass
 
         info: dict[str, Any] = {}
         try:
@@ -582,7 +578,7 @@ class HighlightResolver:
                 url_str = url_str.strip()
                 return self._make_url_resolution(
                     url=url_str,
-                    source=f"accessibility.uia_value",
+                    source="accessibility.uia_value",
                     win_info=win_info,
                     rect=rect_f,
                     selected_text=selected_text,
@@ -666,7 +662,6 @@ class HighlightResolver:
 
             el = result.get("element", {}) or result
             page_url = el.get("url") or el.get("pageUrl", "")
-            selector = el.get("selector", "")
             text_content = el.get("text", "") or el.get("selectedText", "")
 
             if page_url:

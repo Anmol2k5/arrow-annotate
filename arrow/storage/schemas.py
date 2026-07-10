@@ -1,15 +1,11 @@
-import os
 import json
-import datetime
-from dataclasses import dataclass, asdict
-from typing import Optional
+import os
+from typing import Any, Dict, Optional
 
-CAPTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
-SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class CaptureRecord:
+class CaptureRecord(BaseModel):
     id: str
     timestamp: str
     screenshot_path: str
@@ -22,8 +18,9 @@ class CaptureRecord:
     computed_styles: str = ""
     accessibility: str = ""
     selected_text: str = ""
-    bounding_box: Optional[dict] = None
+    bounding_box: Optional[Dict[str, Any]] = Field(default_factory=dict)
     agentation_status: str = ""
+    window_title: str = ""
 
     def formatted_context(self) -> str:
         parts = []
@@ -59,7 +56,7 @@ class CaptureRecord:
         return "\n".join(parts)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
+        d = self.model_dump()
         if self.bounding_box is None:
             d["bounding_box"] = {}
         return d
@@ -69,44 +66,3 @@ class CaptureRecord:
         if not data.get("bounding_box"):
             data["bounding_box"] = {}
         return cls(**data)
-
-
-class CaptureStore:
-    def __init__(self, captures_dir: str = CAPTURES_DIR):
-        self._dir = captures_dir
-
-    def _path(self, capture_id: str) -> str:
-        return os.path.join(self._dir, f"{capture_id}.json")
-
-    def add(self, record: CaptureRecord) -> None:
-        os.makedirs(self._dir, exist_ok=True)
-        with open(self._path(record.id), "w") as f:
-            json.dump(record.to_dict(), f, indent=2)
-
-    def get_all(self) -> list[CaptureRecord]:
-        if not os.path.isdir(self._dir):
-            return []
-        records = []
-        for fn in sorted(os.listdir(self._dir), reverse=True):
-            if fn.endswith(".json"):
-                try:
-                    with open(os.path.join(self._dir, fn)) as f:
-                        records.append(CaptureRecord.from_dict(json.load(f)))
-                except Exception:
-                    pass
-        return records
-
-    def get(self, capture_id: str) -> Optional[CaptureRecord]:
-        p = self._path(capture_id)
-        if not os.path.exists(p):
-            return None
-        with open(p) as f:
-            return CaptureRecord.from_dict(json.load(f))
-
-    def update(self, record: CaptureRecord) -> None:
-        self.add(record)
-
-    def delete(self, capture_id: str) -> None:
-        p = self._path(capture_id)
-        if os.path.exists(p):
-            os.remove(p)

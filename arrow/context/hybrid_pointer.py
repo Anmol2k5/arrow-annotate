@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Any
+from typing import Any, List, Optional, Tuple
 
 log = logging.getLogger("bluely.pointer")
 
@@ -253,8 +253,8 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
             return None
 
         score, hit = best
-        l, t, r, b = hit["bbox"]
-        cx, cy = (l + r) // 2, (t + b) // 2
+        left, top, right, bottom = hit["bbox"]
+        cx, cy = (left + right) // 2, (top + bottom) // 2
         log.info("OCR hit: %r -> %r @ (%d,%d) score=%.2f",
                  query, hit["text"], cx, cy, score)
         print(f"[HybridPointer] OCR hit: '{hit['text']}' @ ({cx},{cy}) "

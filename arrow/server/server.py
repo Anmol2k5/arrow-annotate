@@ -1,25 +1,26 @@
-import io
-import os
+import asyncio
 import base64
-import socket
+import ctypes
+import datetime
+import io
+import json
+import logging
+import os
 import platform
+import socket
 import subprocess
 import threading
-import json
-import ctypes
 import time
-import re
-import datetime
-import asyncio
 from concurrent.futures import Future
 
-from flask import Flask, jsonify, request, Response, send_from_directory
 import websockets
+from flask import Flask, jsonify, request, send_from_directory
 
-from hybrid_pointer import find_target
-from highlight_resolver import HighlightResolver
+from arrow.context.highlight_resolver import HighlightResolver
+from arrow.context.hybrid_pointer import find_target
 
-SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +176,6 @@ class OSController:
 # ---------------------------------------------------------------------------
 # Flask application
 # ---------------------------------------------------------------------------
-import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -208,7 +208,7 @@ def screenshot():
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         img = sct.grab(monitor)
-        pil_img = Image.frombytes("RGB", img.size, img.rgb)
+        pil_img = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
 
     buffer = io.BytesIO()
     pil_img.save(buffer, format="JPEG", quality=88, optimize=True)
@@ -351,6 +351,7 @@ def execute():
         "type": lambda: ctrl.type(target),
         "hotkey": lambda: ctrl.hotkey(target),
         "openapp": lambda: ctrl.open_app(target),
+        "analyze": lambda: _analyze_action(data),
     }
 
     handler = dispatch.get(action)
@@ -422,6 +423,41 @@ def execute_inner(action_data):
         return result
     except Exception as e:
         return {"error": str(e), "type": action, "status": "error"}
+
+
+def _analyze_action(data: dict) -> dict:
+    """Placeholder analyze action for 'Send to AI' feature.
+
+    In production this would call an LLM endpoint. For now, returns a
+    structured suggestion based on the provided context.
+    """
+    transcript = data.get("transcript", "").strip()
+    window_title = data.get("window_title", "")
+    has_screenshot = bool(data.get("screenshot"))
+
+    suggestions = []
+    if transcript:
+        suggestions.append(f"Voice note: \"{transcript}\"")
+    if window_title:
+        suggestions.append(f"Context: {window_title}")
+    if has_screenshot:
+        suggestions.append("Screenshot captured — visual context available.")
+
+    suggestion_text = (
+        "Based on the captured context, consider:\n"
+        "• Review the highlighted region for layout or content issues\n"
+        "• Compare against design specifications\n"
+        "• Check accessibility and responsiveness"
+    )
+    if transcript:
+        suggestion_text = f"Regarding \"{transcript}\":\n" + suggestion_text
+
+    return {
+        "action": "analyze",
+        "status": "ok",
+        "suggestion": suggestion_text,
+        "context": suggestions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -727,8 +763,6 @@ class AgentServer:
 
     def stop(self):
         self._running = False
-        # Flask has no clean shutdown from outside in older versions;
-        # the daemon thread will die with the process.
 
     @property
     def base_url(self):

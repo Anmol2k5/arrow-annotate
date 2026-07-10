@@ -8,3 +8,10 @@ __pycache__/
 captures/
 screenshots/
 graphify-out/
+
+# venv
+.venv/
+
+# Runtime logs / crash dumps
+crash.log
+*.log

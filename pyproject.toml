@@ -1,0 +1,50 @@
+[project]
+name = "arrow-annotate"
+version = "0.1.0"
+description = "Arrow Annotate — Local-first spatial-context tool for coding agents"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.8",
+    "Flask>=3.0",
+    "websockets>=12.0",
+    "mss>=9.0.1",
+    "Pillow",
+    "uiautomation>=2.0",
+    "rapidocr-onnxruntime",
+    "numpy",
+    "keyboard",
+    "SpeechRecognition",
+    "PyAudio",
+    "requests",
+    "pydantic>=2.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "arrow.ui.*",
+    "arrow.server.*",
+    "arrow.context.*",
+    "arrow.providers.*",
+]
+ignore_errors = true
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
