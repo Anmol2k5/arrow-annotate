@@ -540,6 +540,30 @@ class WebSocketBridge:
                 self._pending.pop(msg_id, None)
             raise TimeoutError("Extension did not respond in time")
 
+    def start_browser_annotation(self, capture_id: str, timeout: float = 60.0) -> dict:
+        """Send start_annotation_mode command to extension. Blocking call from any thread."""
+        if not self._ws:
+            raise ConnectionError("No browser extension connected to WebSocket bridge")
+
+        msg_id = f"{time.monotonic_ns()}"
+        fut: Future = Future()
+        with self._pending_lock:
+            self._pending[msg_id] = fut
+
+        async def _send():
+            await self._ws.send(json.dumps({
+                "type": "start_annotation_mode", "id": msg_id, "captureId": capture_id,
+            }))
+
+        asyncio.run_coroutine_threadsafe(_send(), self._loop)
+
+        try:
+            return fut.result(timeout=timeout)
+        except TimeoutError:
+            with self._pending_lock:
+                self._pending.pop(msg_id, None)
+            raise TimeoutError("Extension did not respond to annotation mode request in time")
+
 
 # ---------------------------------------------------------------------------
 # Inspect endpoint  (bridges Flask → WebSocketBridge)

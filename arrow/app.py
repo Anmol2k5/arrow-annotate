@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QApplication
 
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
+from arrow.context.highlight_resolver import _get_foreground_window_info, _is_browser
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
@@ -68,29 +69,172 @@ def main():
     current_voice_text = ""
     is_annotating = False
 
+    def _run_browser_annotation(capture_id):
+        nonlocal is_annotating
+        try:
+            res = server._ws_bridge.start_browser_annotation(capture_id)
+            on_browser_selection(res, capture_id)
+        except Exception as e:
+            print("Browser-native annotation error:", e)
+            is_annotating = False
+            session = session_manager.active_session
+            if session and session.capture_id == capture_id:
+                try:
+                    session_manager.transition_to(CaptureState.FAILED)
+                except ValueError:
+                    pass
+                QMetaObject.invokeMethod(voice, "stop_listening", Qt.ConnectionType.QueuedConnection)
+                QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, False)
+
+    def on_browser_selection(res, capture_id):
+        nonlocal current_voice_text, is_annotating
+        is_annotating = False
+        
+        session = session_manager.active_session
+        if not session or session.capture_id != capture_id:
+            return
+
+        try:
+            session_manager.transition_to(CaptureState.COLLECTING_CONTEXT)
+            session_manager.transition_to(CaptureState.PROCESSING)
+        except ValueError:
+            return
+
+        voice_text = current_voice_text
+        QMetaObject.invokeMethod(voice, "stop_listening", Qt.ConnectionType.QueuedConnection)
+        QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, False)
+
+        import base64
+        from io import BytesIO
+
+        from PIL import Image
+
+        img_b64 = res["tab"]["screenshot"]
+        raw_img = Image.open(BytesIO(base64.b64decode(img_b64)))
+
+        el = res["element"]
+        bbox = el.get("boundingBox", {})
+        source_ann = Annotation(
+            id=f"ann_src_{capture_id}",
+            type="rectangle",
+            role="source",
+            label=el.get("tagName", "element"),
+            geometry={"x": bbox.get("x", 0), "y": bbox.get("y", 0), "width": bbox.get("width", 0), "height": bbox.get("height", 0)}
+        )
+        session.annotations = [source_ann]
+
+        session.source_anchor = {
+            "status": "resolved",
+            "confidence": 0.98,
+            "source": "browser_dom",
+            "evidence": ["Browser-native viewport element capture succeeded"],
+            "capture_id": capture_id,
+            "metadata": {
+                "element_selector": el.get("selector", ""),
+                "element_path": el.get("elementPath", ""),
+                "react_components": el.get("reactComponents", ""),
+                "selected_text": el.get("text", ""),
+                "url": res["tab"].get("url", ""),
+                "tag_name": el.get("tagName", ""),
+            }
+        }
+
+        from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
+        mock_screen = ScreenInfo("BrowserViewport", (0, 0, raw_img.width, raw_img.height), 1.0)
+        mapper = CoordinateMapper([mock_screen])
+
+        screenshot_service = ScreenshotService()
+        annotated_img = screenshot_service.render_annotations(raw_img, session.annotations, mapper)
+        source_crop, dest_crop, context_crop = screenshot_service.generate_crops(raw_img, session.annotations, mapper)
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        screenshots_dir = os.path.join(root_dir, "screenshots")
+        os.makedirs(screenshots_dir, exist_ok=True)
+
+        raw_path = os.path.join(screenshots_dir, f"raw_{ts}.png")
+        annotated_path = os.path.join(screenshots_dir, f"annotated_{ts}.png")
+        context_path = os.path.join(screenshots_dir, f"context_crop_{ts}.png")
+
+        raw_img.save(raw_path, "PNG")
+        annotated_img.save(annotated_path, "PNG")
+        context_crop.save(context_path, "PNG")
+
+        session.assets = [raw_path, annotated_path, context_path]
+
+        if source_crop:
+            source_path = os.path.join(screenshots_dir, f"source_crop_{ts}.png")
+            source_crop.save(source_path, "PNG")
+            session.assets.append(source_path)
+
+        record = CaptureRecord(
+            id=ts,
+            timestamp=datetime.datetime.now().isoformat(),
+            screenshot_path=annotated_path,
+            annotation_text=voice_text,
+            cursor_x=0,
+            cursor_y=0,
+            bounding_box=bbox,
+            window_title=res["tab"].get("title", ""),
+            element_selector=el.get("selector", ""),
+            element_path=el.get("elementPath", ""),
+            react_components=el.get("reactComponents", ""),
+            selected_text=el.get("text", ""),
+        )
+        capture_store.add(record)
+
+        try:
+            session_manager.transition_to(CaptureState.PREVIEW)
+            session_manager.transition_to(CaptureState.READY)
+        except ValueError:
+            return
+
+        QMetaObject.invokeMethod(notch, "refresh_screenshots", Qt.ConnectionType.QueuedConnection)
+        QMetaObject.invokeMethod(notch, "auto_expand_briefly", Qt.ConnectionType.QueuedConnection)
+
+        try:
+            session_manager.transition_to(CaptureState.SENDING)
+        except ValueError:
+            return
+
+        threading.Thread(target=_send_to_agentation, args=(record, capture_id), daemon=True).start()
+
     def toggle_annotation():
         nonlocal is_annotating, current_voice_text
         if not is_annotating:
             is_annotating = True
             current_voice_text = ""
             
-            # Start new capture session
             session = session_manager.start_session()
             capture_id = session.capture_id
             
-            # Transition to ANNOTATING
             session_manager.transition_to(CaptureState.ANNOTATING)
 
+            win_info = _get_foreground_window_info()
+            exe_name = win_info.get("exe_name", "").lower() if win_info else ""
+            bridge = server._ws_bridge
+            
+            if _is_browser(exe_name) and bridge and bridge.connected:
+                session.mode = "browser"
+                QMetaObject.invokeMethod(voice, "start_listening", Qt.ConnectionType.QueuedConnection, capture_id)
+                QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, True)
+                threading.Thread(target=_run_browser_annotation, args=(capture_id,), daemon=True).start()
+                return
+
             QMetaObject.invokeMethod(overlay, "show_overlay", Qt.ConnectionType.QueuedConnection)
-            # Pass capture_id to voice input
             QMetaObject.invokeMethod(voice, "start_listening", Qt.ConnectionType.QueuedConnection, capture_id)
-            # Show waveform in notch idle pill
             QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, True)
         else:
             is_annotating = False
-            QMetaObject.invokeMethod(overlay, "hide_overlay", Qt.ConnectionType.QueuedConnection)
+            session = session_manager.active_session
+            if session and session.mode == "browser":
+                try:
+                    session_manager.transition_to(CaptureState.CANCELLED)
+                except ValueError:
+                    pass
+            else:
+                QMetaObject.invokeMethod(overlay, "hide_overlay", Qt.ConnectionType.QueuedConnection)
             QMetaObject.invokeMethod(voice, "stop_listening", Qt.ConnectionType.QueuedConnection)
-            # Restore logo in notch idle pill
             QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, False)
             
             # If no selection comes, cancellation is handled in hide_overlay/on_selection
