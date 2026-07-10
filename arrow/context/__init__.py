@@ -1,5 +1,12 @@
 # Arrow Context subpackage
 
+from arrow.context.native_resolver import (
+    NativeContextResolver,
+    NativeElementContext,
+    NativeResolverResult,
+    OCRCandidate,
+    Rect,
+)
 from arrow.context.repo_context import RepositoryContext, collect_repository_context
 from arrow.context.source_mapper import (
     ElementContext,
@@ -17,4 +24,9 @@ __all__ = [
     "SourceMapper",
     "SourceMappingResult",
     "element_context_from_browser",
+    "NativeContextResolver",
+    "NativeElementContext",
+    "NativeResolverResult",
+    "OCRCandidate",
+    "Rect",
 ]
