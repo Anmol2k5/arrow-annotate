@@ -8,7 +8,8 @@ import threading
 from PyQt6.QtCore import QMetaObject, Qt, QTimer
 from PyQt6.QtWidgets import QApplication
 
-from arrow.capture.session import CaptureState, SessionManager
+from arrow.capture.screenshot_service import ScreenshotService
+from arrow.capture.session import Annotation, CaptureState, SessionManager
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
@@ -139,10 +140,22 @@ def main():
         cursor_x, cursor_y = _get_cursor_position()
         window_title = _get_foreground_title()
 
-        def _capture_task():
-            import mss
-            from PIL import Image
+        # Capture raw screenshot on main thread (with overlay auto-hiding)
+        screenshot_service = ScreenshotService()
+        raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
 
+        # Create annotation for the selection bounds
+        rect = result.to_dict()
+        source_ann = Annotation(
+            id=f"ann_src_{capture_id}",
+            type="rectangle",
+            role="source",
+            label="Source selection",
+            geometry={"x": rect["x"], "y": rect["y"], "width": rect["width"], "height": rect["height"]}
+        )
+        session.annotations = [source_ann]
+
+        def _capture_task():
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
                 return
 
@@ -151,49 +164,46 @@ def main():
             except ValueError:
                 return
 
-            rect = result.to_dict()
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Render off-screen annotations
+            annotated_img = screenshot_service.render_annotations(raw_img, session.annotations, mapper)
 
-            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # Generate target crops
+            source_crop, dest_crop, context_crop = screenshot_service.generate_crops(raw_img, session.annotations, mapper)
+
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             screenshots_dir = os.path.join(root_dir, "screenshots")
             os.makedirs(screenshots_dir, exist_ok=True)
 
-            with mss.mss() as sct:
-                monitor = sct.monitors[1]  # primary monitor
-                sct_img = sct.grab(monitor)
-                full_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            # Define asset paths
+            raw_path = os.path.join(screenshots_dir, f"raw_{ts}.png")
+            annotated_path = os.path.join(screenshots_dir, f"annotated_{ts}.png")
+            context_path = os.path.join(screenshots_dir, f"context_crop_{ts}.png")
 
-            # Save full screenshot
-            full_path = os.path.join(screenshots_dir, f"full_{ts}.png")
-            full_img.save(full_path)
+            raw_img.save(raw_path, "PNG")
+            annotated_img.save(annotated_path, "PNG")
+            context_crop.save(context_path, "PNG")
 
-            # Crop to selection bounding box
-            sel_x = max(0, rect.get("x", 0))
-            sel_y = max(0, rect.get("y", 0))
-            sel_w = rect.get("width", 0)
-            sel_h = rect.get("height", 0)
+            session.assets = [raw_path, annotated_path, context_path]
 
-            if sel_w > 0 and sel_h > 0:
-                crop_box = (
-                    sel_x,
-                    sel_y,
-                    min(sel_x + sel_w, full_img.width),
-                    min(sel_y + sel_h, full_img.height),
-                )
-                cropped_img = full_img.crop(crop_box)
-                crop_path = os.path.join(screenshots_dir, f"capture_{ts}.png")
-                cropped_img.save(crop_path)
-            else:
-                crop_path = full_path
+            if source_crop:
+                source_path = os.path.join(screenshots_dir, f"source_crop_{ts}.png")
+                source_crop.save(source_path, "PNG")
+                session.assets.append(source_path)
+
+            if dest_crop:
+                dest_path = os.path.join(screenshots_dir, f"destination_crop_{ts}.png")
+                dest_crop.save(dest_path, "PNG")
+                session.assets.append(dest_path)
 
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
                 return
 
-            # Save to capture store
+            # Save CaptureRecord (reference annotated image to display in Notch)
             record = CaptureRecord(
                 id=ts,
                 timestamp=datetime.datetime.now().isoformat(),
-                screenshot_path=crop_path,
+                screenshot_path=annotated_path,
                 annotation_text=voice_text,
                 cursor_x=cursor_x,
                 cursor_y=cursor_y,

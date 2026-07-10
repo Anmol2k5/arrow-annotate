@@ -48,6 +48,18 @@ class CaptureState(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class Annotation(BaseModel):
+    id: str
+    type: str  # "pointer", "rectangle", "highlight", "arrow", "freehand", "text"
+    role: str  # "source", "destination", "supporting", "informational"
+    label: str = ""
+    coordinateSpace: str = "virtual_screen"
+    geometry: Dict[str, Any] = Field(default_factory=dict)
+    style: Dict[str, Any] = Field(default_factory=dict)
+    createdAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    order: int = 1
+
+
 class CaptureSession(BaseModel):
     capture_id: str = Field(default_factory=generate_uuidv7)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -55,7 +67,7 @@ class CaptureSession(BaseModel):
     state: CaptureState = CaptureState.IDLE
     mode: str = "desktop"
     project_id: Optional[str] = None
-    annotations: List[Dict[str, Any]] = Field(default_factory=list)
+    annotations: List[Annotation] = Field(default_factory=list)
     source_anchor: Optional[Dict[str, Any]] = None
     destination_anchor: Optional[Dict[str, Any]] = None
     raw_instruction: str = ""
