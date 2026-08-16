@@ -8,16 +8,24 @@ import logging
 import os
 import platform
 import socket
-import subprocess
 import threading
 import time
 from concurrent.futures import Future
+from functools import wraps
 
 import websockets
 from flask import Flask, jsonify, request, send_from_directory
 
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
+from arrow.server.security import (
+    MAX_REQUEST_BYTES,
+    Capability,
+    CapabilityManager,
+    TokenManager,
+    is_localhost_origin,
+    parse_bearer,
+)
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
@@ -162,13 +170,17 @@ class OSController:
 
     @classmethod
     def open_app(cls, target: str):
-        """Open an application or file."""
+        """Open an existing file or application path.
+
+        Security: only existing filesystem paths are opened via the OS shell
+        association. Arbitrary command strings are never passed to a shell
+        (no ``shell=True``); general-purpose command execution is not exposed.
+        """
         try:
             if os.path.exists(target):
-                os.startfile(target)
-            else:
-                subprocess.Popen(target, shell=True)
-            return {"action": "openApp", "target": target}
+                os.startfile(target)  # noqa: S606 - path existence validated above
+                return {"action": "openApp", "target": target}
+            return {"error": "open_app only accepts existing file/application paths."}
         except Exception as e:
             return {"error": str(e)}
 
@@ -182,6 +194,40 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 app = Flask(__name__)
 app.config["AGENT_NAME"] = "bluely-agent"
 app.config["OS_CTRL"] = OSController()
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+app.config["TOKEN_MANAGER"] = TokenManager()
+app.config["CAPABILITIES"] = CapabilityManager()
+
+
+def require_capability(capability: Capability):
+    """Decorator: enforce bearer auth, localhost origin and a capability.
+
+    Sensitive capabilities are disabled by default, so these endpoints reject
+    requests unless the user has explicitly enabled the capability AND presents
+    the per-install bearer token.
+    """
+
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not is_localhost_origin(request.headers.get("Origin")):
+                return jsonify({"error": "Origin not allowed"}), 403
+            tokens: TokenManager = app.config["TOKEN_MANAGER"]
+            presented = parse_bearer(request.headers.get("Authorization"))
+            if not tokens.verify(presented):
+                return jsonify({"error": "Unauthorized"}), 401
+            caps: CapabilityManager = app.config["CAPABILITIES"]
+            if not caps.is_enabled(capability):
+                return jsonify({
+                    "error": f"Capability '{capability.value}' is disabled",
+                    "hint": "Opt in by setting ARROW_ENABLED_CAPABILITIES="
+                            f"{capability.value} before starting the server.",
+                }), 403
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 @app.route("/status", methods=["GET"])
@@ -323,6 +369,7 @@ def resolve():
 
 
 @app.route("/execute", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
 def execute():
     """Dispatch OS actions based on type.
 
@@ -371,6 +418,7 @@ def execute():
 
 
 @app.route("/execute/batch", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
 def execute_batch():
     """Execute multiple actions sequentially."""
     data = request.get_json(silent=True) or {}
@@ -665,6 +713,7 @@ def highlight_capture():
 
 
 @app.route("/highlight/execute", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
 def highlight_execute():
     """Execute an action scoped to a highlighted region.
 
