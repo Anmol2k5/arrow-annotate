@@ -516,12 +516,20 @@ class WebSocketBridge:
     """Bidirectional bridge between Flask and the browser extension via WebSocket.
 
     Runs its own asyncio event loop in a daemon thread.
-    Extension connects to ws://HOST:PORT and receives inspect commands.
+    Extension connects to ws://HOST:PORT, must present the per-install bearer
+    token in an ``auth`` message within ``auth_timeout`` seconds, and only then
+    receives inspect commands.
     """
 
-    def __init__(self, host="127.0.0.1", port=5002):
+    # Custom close code for rejected/unauthenticated connections.
+    _CLOSE_AUTH = 4001
+
+    def __init__(self, host="127.0.0.1", port=5002, token_manager=None,
+                 auth_timeout: float = 10.0):
         self.host = host
         self.port = port
+        self.token_manager = token_manager or app.config["TOKEN_MANAGER"]
+        self.auth_timeout = auth_timeout
         self._loop = None
         self._thread = None
         self._ws = None
@@ -549,7 +557,8 @@ class WebSocketBridge:
             await asyncio.Future()
 
     async def _handler(self, websocket):
-        self._ws = websocket
+        if not await self._authenticate(websocket):
+            return
         try:
             async for raw in websocket:
                 data = json.loads(raw)
@@ -562,7 +571,44 @@ class WebSocketBridge:
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            self._ws = None
+            if self._ws is websocket:
+                self._ws = None
+
+    async def _authenticate(self, websocket) -> bool:
+        """Require an ``auth`` message with a valid bearer token before use.
+
+        The connection is only registered (``self._ws``) after a successful
+        handshake, so inspect commands cannot be issued before auth completes.
+        """
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=self.auth_timeout)
+        except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed):
+            await self._close_unauth(websocket, "auth timeout or closed")
+            return False
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            await self._close_unauth(websocket, "malformed auth message")
+            return False
+        if data.get("type") != "auth":
+            await self._close_unauth(websocket, "auth required")
+            return False
+        if not self.token_manager.verify(data.get("token")):
+            await self._close_unauth(websocket, "invalid token")
+            return False
+        self._ws = websocket
+        await websocket.send(json.dumps({"type": "auth_ok"}))
+        return True
+
+    async def _close_unauth(self, websocket, reason: str) -> None:
+        try:
+            await websocket.send(json.dumps({"type": "auth_error", "error": reason}))
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        try:
+            await websocket.close(code=self._CLOSE_AUTH, reason=reason)
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     def inspect(self, x: int, y: int, timeout: float = 5.0) -> dict:
         """Send inspect command to extension. Blocking call from any thread."""
@@ -793,7 +839,11 @@ class AgentServer:
         app.config["start_time"] = time.time()
 
         # Start WebSocket bridge
-        self._ws_bridge = WebSocketBridge(host=self.ws_host, port=self.ws_port)
+        self._ws_bridge = WebSocketBridge(
+            host=self.ws_host,
+            port=self.ws_port,
+            token_manager=app.config["TOKEN_MANAGER"],
+        )
         self._ws_bridge.start()
         app.config["WS_BRIDGE"] = self._ws_bridge
         print(f"[WSBridge] listening on ws://{self.ws_host}:{self.ws_port}")

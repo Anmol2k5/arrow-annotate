@@ -99,7 +99,7 @@ class TokenManager:
             return token
 
     def verify(self, presented: Optional[str]) -> bool:
-        if not presented:
+        if not presented or not isinstance(presented, str):
             return False
         expected = self.get_or_create()
         return hmac.compare_digest(presented, expected)

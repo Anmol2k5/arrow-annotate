@@ -55,13 +55,30 @@ Unknown capability names are ignored (logged).
 
 `MAX_CONTENT_LENGTH = 8 MiB` caps request bodies.
 
-## 7. Remaining open items
+## 7. WebSocket bridge authentication — FIXED
 
-- **WebSocket bridge (5002) is unauthenticated.** Any local process can
-  connect and send `inspect` commands to the active browser tab. Fixing it
-  needs a design decision first: how does the browser extension obtain the
-  token (it cannot read `~/.arrow/token`)? Until that is answered, do not
-  bolt auth onto the bridge in a way that breaks the extension.
+`ws://127.0.0.1:5002` now requires a bearer-token handshake before any
+`inspect` command is accepted:
+
+1. The client connects and must send `{"type": "auth", "token": "…"}` within
+   10 seconds.
+2. The server validates the token against the same per-install token as the
+   HTTP endpoints (`~/.arrow/token`).
+3. Success → `{"type": "auth_ok"}` and the connection is registered.
+   Failure (missing, malformed, wrong token, or timeout) →
+   `{"type": "auth_error"}` followed by a close with code `4001`.
+4. Until auth succeeds the connection is not registered, so `/inspect`
+   requests return `503` rather than reaching an unauthenticated socket.
+
+**How the extension gets the token:** the extension popup (`popup.html`)
+accepts the token by paste or by "Load from file…" (the user picks
+`~/.arrow/token`); it is stored in `chrome.storage.local` and sent on every
+connection. The badge shows `KEY?` (no token), `AUTH` (wrong token), `ON`
+(authorized), or `OFF` (disconnected). Unauthorized connections are not
+auto-reconnected — the extension waits for the user to fix the token.
+
+## 8. Remaining open items
+
 - **Read endpoints are unauthenticated by design.** `/status`, `/screenshot`,
   `/screenshots/*`, `/screenshots/save`, `/resolve`, `/inspect`,
   `/highlight/resolve`, `/highlight/capture` require no token. This is
