@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -38,6 +39,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, set_project_dir
@@ -412,11 +414,11 @@ class ScreenshotThumbnail(QFrame):
         text_layout.setContentsMargins(16, 12, 16, 12)
 
         text_str = self._text if self._text else "Visual highlight"
-        text_lbl = QLabel(text_str)
-        text_lbl.setWordWrap(True)
-        text_lbl.setStyleSheet("color: #F8FAFC; font-size: 13px; font-weight: 600; line-height: 1.4;")
-        text_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        text_layout.addWidget(text_lbl)
+        self._text_lbl = QLabel(text_str)
+        self._text_lbl.setWordWrap(True)
+        self._text_lbl.setStyleSheet("color: #F8FAFC; font-size: 13px; font-weight: 600; line-height: 1.4;")
+        self._text_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        text_layout.addWidget(self._text_lbl)
 
         # Compiled intent panel (from the orchestrator's change request)
         if self._change_request:
@@ -483,7 +485,6 @@ class ScreenshotThumbnail(QFrame):
 
     def _build_intent_panel(self):
         """Compact card section showing the compiled change request."""
-        cr = self._change_request
         panel = QFrame()
         panel.setStyleSheet("""
             QFrame {
@@ -499,9 +500,8 @@ class ScreenshotThumbnail(QFrame):
         header = QHBoxLayout()
         header.setSpacing(8)
 
-        intent = INTENT_LABELS.get(cr.get("normalized_intent", ""), "Unknown")
-        chip = QLabel(intent)
-        chip.setStyleSheet("""
+        self._chip_lbl = QLabel("")
+        self._chip_lbl.setStyleSheet("""
             background: rgba(167,139,250,30);
             color: #C4B5FD;
             border-radius: 8px;
@@ -509,20 +509,22 @@ class ScreenshotThumbnail(QFrame):
             font-size: 11px;
             font-weight: 700;
         """)
-        header.addWidget(chip)
+        header.addWidget(self._chip_lbl)
 
-        conf = cr.get("confidence")
-        if conf is not None:
-            conf_lbl = QLabel(f"{round(conf * 100)}%")
-            conf_lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: 600; border: none;")
-            header.addWidget(conf_lbl)
+        self._conf_lbl = QLabel("")
+        self._conf_lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: 600; border: none;")
+        header.addWidget(self._conf_lbl)
 
         header.addStretch()
         v.addLayout(header)
 
-        # Action row: copy the request, or send it straight to a coding agent.
+        # Action row: edit the instruction, copy the request, or send it
+        # straight to a coding agent.
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
+
+        edit_btn = self._action_button("✏️ Edit", self._edit_instruction)
+        btn_row.addWidget(edit_btn)
 
         copy_btn = self._action_button("📋 Copy", self._copy_request)
         btn_row.addWidget(copy_btn)
@@ -539,11 +541,36 @@ class ScreenshotThumbnail(QFrame):
         btn_row.addStretch()
         v.addLayout(btn_row)
 
+        # Refreshable info section (summary / source→destination / likely file).
+        self._info_widget = QWidget()
+        self._info_v = QVBoxLayout(self._info_widget)
+        self._info_v.setContentsMargins(0, 0, 0, 0)
+        self._info_v.setSpacing(6)
+        v.addWidget(self._info_widget)
+
+        self._fill_intent_content()
+        return panel
+
+    def _fill_intent_content(self):
+        """(Re)build the chip, confidence and info section from the current request."""
+        cr = self._change_request
+        self._chip_lbl.setText(INTENT_LABELS.get(cr.get("normalized_intent", ""), "Unknown"))
+
+        conf = cr.get("confidence")
+        self._conf_lbl.setText(f"{round(conf * 100)}%" if conf is not None else "")
+        self._conf_lbl.setVisible(conf is not None)
+
+        while self._info_v.count():
+            item = self._info_v.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
         if cr.get("summary"):
             summary = QLabel(cr["summary"])
             summary.setWordWrap(True)
             summary.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 500; border: none;")
-            v.addWidget(summary)
+            self._info_v.addWidget(summary)
 
         src = _anchor_label(cr.get("source") or {})
         dst = _anchor_label(cr.get("destination") or {})
@@ -551,7 +578,7 @@ class ScreenshotThumbnail(QFrame):
             arrow_lbl = QLabel(f"{src or '…'}  →  {dst or '…'}")
             arrow_lbl.setWordWrap(True)
             arrow_lbl.setStyleSheet("color: #7DD3FC; font-size: 11px; font-weight: 500; border: none;")
-            v.addWidget(arrow_lbl)
+            self._info_v.addWidget(arrow_lbl)
 
         files = cr.get("likely_files") or []
         if files:
@@ -561,9 +588,39 @@ class ScreenshotThumbnail(QFrame):
                 loc += f":{f['source_line']}"
             file_lbl = QLabel(f"📄 {loc}")
             file_lbl.setStyleSheet("color: #94A3B8; font-size: 10px; font-family: Consolas, monospace; border: none;")
-            v.addWidget(file_lbl)
+            self._info_v.addWidget(file_lbl)
 
-        return panel
+        self._info_v.addStretch()
+
+    def _edit_instruction(self):
+        """Let the user edit the instruction, recompile, and persist the result."""
+        current = self._change_request.get("raw_user_request", "")
+        text, ok = QInputDialog.getText(self, "Edit instruction", "Instruction:", text=current)
+        if not ok:
+            return
+
+        new_instruction = text.strip()
+        new_cr = recompile_change_request(self._change_request, new_instruction)
+        if new_cr is None:
+            return
+
+        self._change_request = new_cr.to_dict()
+        if new_instruction:
+            self._text = new_instruction
+            self._text_lbl.setText(new_instruction)
+
+        capture_id = self._change_request.get("capture_id")
+        if capture_id:
+            try:
+                from arrow.storage.capture_store import CaptureStore
+                CaptureStore().update_change_request(
+                    capture_id, self._change_request,
+                    annotation_text=new_instruction or None,
+                )
+            except Exception as e:
+                print("Failed to persist edited change request:", e)
+
+        self._fill_intent_content()
 
     @staticmethod
     def _action_button(text, slot):

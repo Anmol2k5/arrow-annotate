@@ -573,4 +573,49 @@ def _finalize(
     req.clarification_required = any(a.severity == "blocking" for a in req.ambiguities)
 
 
-__all__ = ["IntentCompiler", "CompilerInput"]
+# ---------------------------------------------------------------------------
+# Recompile (edit-context support)
+# ---------------------------------------------------------------------------
+
+def recompile_change_request(
+    old: dict,
+    new_instruction: str,
+    compiler: Optional[IntentCompiler] = None,
+) -> Optional[ChangeRequest]:
+    """Recompile a persisted change request with an edited instruction.
+
+    The previous anchors, element context, mappings, project and assets are
+    reconstructed from the old change request, so only the instruction (and
+    therefore the intent, requested changes, criteria and confidence) changes.
+    Returns ``None`` when there is nothing to recompile.
+    """
+    if not old:
+        return None
+
+    annotations: list[dict] = []
+    for role in ("source", "destination"):
+        anchor = old.get(role)
+        if anchor:
+            annotations.append({
+                "role": role,
+                "label": anchor.get("label") or "",
+                "geometry": anchor.get("geometry") or {},
+                "coordinateSpace": anchor.get("coordinate_space"),
+            })
+
+    data = CompilerInput(
+        capture_id=old.get("capture_id"),
+        application_mode=old.get("application_mode", "web"),
+        project=old.get("project") or {},
+        raw_instruction=new_instruction,
+        annotations=annotations,
+        source_context=(old.get("source") or {}).get("element") or {},
+        destination_context=(old.get("destination") or {}).get("element") or {},
+        source_mapping=(old.get("source") or {}).get("source_mapping") or {},
+        destination_mapping=(old.get("destination") or {}).get("source_mapping") or {},
+        assets=old.get("assets") or {},
+    )
+    return (compiler or IntentCompiler()).compile(data)
+
+
+__all__ = ["IntentCompiler", "CompilerInput", "recompile_change_request"]

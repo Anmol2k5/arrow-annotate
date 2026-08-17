@@ -114,6 +114,32 @@ class CaptureStore:
             conn.execute('DELETE FROM sessions WHERE capture_id = ?', (capture_id,))
             conn.commit()
 
+    def update_change_request(self, capture_id: str, change_request: Optional[dict],
+                              annotation_text: Optional[str] = None) -> None:
+        """Replace the persisted change request (and optionally the instruction text).
+
+        Used by the edit-context flow when the user edits the instruction and the
+        change request is recompiled. No-op when the capture does not exist.
+        """
+        with get_db_connection(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT data FROM contexts WHERE capture_id = ?", (capture_id,)
+            ).fetchone()
+            if row is None:
+                return
+            cdata = json.loads(row["data"]) if row["data"] else {}
+            cdata["change_request"] = json.dumps(change_request) if change_request else None
+            conn.execute(
+                "UPDATE contexts SET data = ? WHERE capture_id = ?",
+                (json.dumps(cdata), capture_id),
+            )
+            if annotation_text is not None:
+                conn.execute(
+                    "UPDATE sessions SET voice_transcript = ? WHERE capture_id = ?",
+                    (annotation_text, capture_id),
+                )
+            conn.commit()
+
     @staticmethod
     def _record_from_row(row, cdata: dict) -> CaptureRecord:
         change_request = cdata.get('change_request')

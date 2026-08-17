@@ -91,6 +91,15 @@ agent prompt are the same structured truth.
 - MCP retrieval verified against a real Codex/Claude session; voice stale-result integration tests; OCR/UIA verification against real native apps.
 - Screenshot retention controls and region redaction (Phase 14 privacy items).
 
+## Follow-up: edit-context recompile (implemented)
+
+After this spec was written, edit-context was implemented: the notch card has an
+**✏️ Edit** action that lets the user change the instruction, recompiles the
+change request from the persisted anchors/element context/mappings, updates the
+card, and persists the new request (and instruction text) back to the capture
+record via the store. Recompile logic lives in the intent compiler
+(`recompile_change_request`) and is covered by `tests/test_recompile.py`.
+
 ## Further Notes
 
 - The move relationship is inferred from annotation geometry when the instruction has no explicit spatial keyword, and is always marked as an inference.
