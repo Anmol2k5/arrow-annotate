@@ -866,3 +866,8 @@ class AgentServer:
     @property
     def base_url(self):
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def ws_bridge(self):
+        """The WebSocket bridge used by the browser extension."""
+        return self._ws_bridge

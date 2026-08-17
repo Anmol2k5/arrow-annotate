@@ -1,5 +1,4 @@
 import ctypes
-import datetime
 import os
 import signal
 import sys
@@ -10,9 +9,11 @@ from PyQt6.QtWidgets import QApplication
 
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
+from arrow.context.orchestrator import ContextOrchestrator
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
+from arrow.storage.settings import get_project_dir
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.voice_input import VoiceInput
@@ -58,6 +59,13 @@ def main():
     # -- Setup Capture Store --
     capture_store = CaptureStore()
 
+    # -- Setup the capture pipeline (one orchestrator for all capture flows) --
+    orchestrator = ContextOrchestrator(
+        store=capture_store,
+        ws_bridge=server.ws_bridge,
+        project_dir=get_project_dir(),
+    )
+
     # -- Setup Highlight Overlay & Voice Input --
     overlay = SelectionOverlay()
     voice = VoiceInput()
@@ -96,6 +104,7 @@ def main():
             # If no selection comes, cancellation is handled in hide_overlay/on_selection
 
     notch.on_highlight_requested = toggle_annotation
+    notch.on_project_selected = orchestrator.set_project_dir
 
     def on_voice_result(text, capture_id):
         nonlocal current_voice_text, is_annotating
@@ -144,16 +153,34 @@ def main():
         screenshot_service = ScreenshotService()
         raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
 
-        # Create annotation for the selection bounds
-        rect = result.to_dict()
-        source_ann = Annotation(
-            id=f"ann_src_{capture_id}",
-            type="rectangle",
-            role="source",
-            label="Source selection",
-            geometry={"x": rect["x"], "y": rect["y"], "width": rect["width"], "height": rect["height"]}
-        )
-        session.annotations = [source_ann]
+        # Create annotations from the overlay result (source + optional destination)
+        data = result.to_dict()
+        source_rect = data.get("source") or data
+        dest_rect = data.get("destination")
+        rect = source_rect
+
+        annotations = [
+            Annotation(
+                id=f"ann_src_{capture_id}",
+                type="rectangle",
+                role="source",
+                label="Current element",
+                geometry={"x": source_rect["x"], "y": source_rect["y"],
+                          "width": source_rect["width"], "height": source_rect["height"]}
+            )
+        ]
+        if dest_rect:
+            annotations.append(
+                Annotation(
+                    id=f"ann_dst_{capture_id}",
+                    type="rectangle",
+                    role="destination",
+                    label="Move here",
+                    geometry={"x": dest_rect["x"], "y": dest_rect["y"],
+                              "width": dest_rect["width"], "height": dest_rect["height"]}
+                )
+            )
+        session.annotations = annotations
 
         def _capture_task():
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
@@ -164,53 +191,38 @@ def main():
             except ValueError:
                 return
 
-            # Render off-screen annotations
-            annotated_img = screenshot_service.render_annotations(raw_img, session.annotations, mapper)
+            try:
+                # Run the full pipeline: resolve anchors (browser DOM → UIA),
+                # collect repository context, render annotated screenshot +
+                # crops, compile the change request, persist the record.
+                pipeline = orchestrator.run(
+                    session=session,
+                    rect=rect,
+                    instruction=voice_text,
+                    cursor=(cursor_x, cursor_y),
+                    window_title=window_title,
+                    raw_img=raw_img,
+                    screen_info=screen_info,
+                    mapper=mapper,
+                )
+            except Exception as e:
+                print("Capture pipeline failed:", e)
+                try:
+                    session_manager.transition_to(CaptureState.FAILED)
+                except ValueError:
+                    pass
+                return
 
-            # Generate target crops
-            source_crop, dest_crop, context_crop = screenshot_service.generate_crops(raw_img, session.annotations, mapper)
-
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            screenshots_dir = os.path.join(root_dir, "screenshots")
-            os.makedirs(screenshots_dir, exist_ok=True)
-
-            # Define asset paths
-            raw_path = os.path.join(screenshots_dir, f"raw_{ts}.png")
-            annotated_path = os.path.join(screenshots_dir, f"annotated_{ts}.png")
-            context_path = os.path.join(screenshots_dir, f"context_crop_{ts}.png")
-
-            raw_img.save(raw_path, "PNG")
-            annotated_img.save(annotated_path, "PNG")
-            context_crop.save(context_path, "PNG")
-
-            session.assets = [raw_path, annotated_path, context_path]
-
-            if source_crop:
-                source_path = os.path.join(screenshots_dir, f"source_crop_{ts}.png")
-                source_crop.save(source_path, "PNG")
-                session.assets.append(source_path)
-
-            if dest_crop:
-                dest_path = os.path.join(screenshots_dir, f"destination_crop_{ts}.png")
-                dest_crop.save(dest_path, "PNG")
-                session.assets.append(dest_path)
+            if pipeline.error:
+                print("Capture pipeline error:", pipeline.error)
+                try:
+                    session_manager.transition_to(CaptureState.FAILED)
+                except ValueError:
+                    pass
+                return
 
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
                 return
-
-            # Save CaptureRecord (reference annotated image to display in Notch)
-            record = CaptureRecord(
-                id=ts,
-                timestamp=datetime.datetime.now().isoformat(),
-                screenshot_path=annotated_path,
-                annotation_text=voice_text,
-                cursor_x=cursor_x,
-                cursor_y=cursor_y,
-                bounding_box=rect,
-                window_title=window_title,
-            )
-            capture_store.add(record)
 
             try:
                 session_manager.transition_to(CaptureState.PREVIEW)
@@ -228,6 +240,7 @@ def main():
                 return
 
             # Send to Agentation async
+            record = CaptureRecord.from_dict(pipeline.record)
             threading.Thread(target=_send_to_agentation, args=(record, capture_id), daemon=True).start()
 
         threading.Thread(target=_capture_task, daemon=True).start()

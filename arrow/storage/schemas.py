@@ -21,6 +21,7 @@ class CaptureRecord(BaseModel):
     bounding_box: Optional[Dict[str, Any]] = Field(default_factory=dict)
     agentation_status: str = ""
     window_title: str = ""
+    change_request: Optional[Dict[str, Any]] = None
 
     def formatted_context(self) -> str:
         parts = []
@@ -59,6 +60,8 @@ class CaptureRecord(BaseModel):
         d = self.model_dump()
         if self.bounding_box is None:
             d["bounding_box"] = {}
+        if self.change_request is None:
+            d["change_request"] = {}
         return d
 
     @classmethod

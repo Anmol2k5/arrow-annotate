@@ -97,3 +97,36 @@ def test_build_preview_empty_capture():
 def test_enums_present():
     assert RunStatus.WAITING_PERMISSION.value == "Waiting for permission"
     assert ProviderOption.COPY_ONLY.value == "Copy only"
+
+
+def test_format_change_request_renders_paste_ready_prompt():
+    from arrow.ui.notch import format_change_request
+
+    cr = {
+        "normalized_intent": "move_element",
+        "summary": "Move Buy to Here.",
+        "raw_user_request": "Move this button here and make it wider",
+        "source": {"label": "Buy", "element": {"name": "Buy"}},
+        "destination": {"label": "Here", "element": {"name": "Here"}},
+        "confidence": 0.82,
+        "likely_files": [{"source_file": "src/components/Buy.tsx", "source_line": 12}],
+        "requested_changes": [{"description": "Move the source element to the destination location."}],
+        "acceptance_criteria": ["Buy appears at Here."],
+        "constraints": ["Prefer normal layout flow."],
+    }
+    text = format_change_request(cr)
+    assert "**Intent:** Move element" in text
+    assert "**Instruction:** Move this button here and make it wider" in text
+    assert "**Source:** Buy" in text
+    assert "**Destination:** Here" in text
+    assert "**Confidence:** 0.82" in text
+    assert "**Likely file:** src/components/Buy.tsx:12" in text
+    assert "Buy appears at Here." in text
+    assert "Prefer normal layout flow." in text
+
+
+def test_format_change_request_empty():
+    from arrow.ui.notch import format_change_request
+
+    assert format_change_request({}) == ""
+    assert format_change_request(None) == ""

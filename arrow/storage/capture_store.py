@@ -57,6 +57,7 @@ class CaptureStore:
                 "bounding_box": record.bounding_box,
                 "agentation_status": record.agentation_status,
                 "window_title": record.window_title,
+                "change_request": json.dumps(record.change_request) if record.change_request else None,
             }
             conn.execute('INSERT INTO contexts (capture_id, data) VALUES (?, ?)',
                          (record.id, json.dumps(context_data)))
@@ -76,23 +77,7 @@ class CaptureStore:
 
             for row in rows:
                 cdata = json.loads(row['context_data']) if row['context_data'] else {}
-                records.append(CaptureRecord(
-                    id=row['capture_id'],
-                    timestamp=row['created_at'],
-                    annotation_text=row['voice_transcript'],
-                    screenshot_path=row['screenshot_path'],
-                    cursor_x=cdata.get('cursor_x', 0),
-                    cursor_y=cdata.get('cursor_y', 0),
-                    element_selector=cdata.get('element_selector') or "",
-                    element_path=cdata.get('element_path') or "",
-                    react_components=cdata.get('react_components') or "",
-                    computed_styles=cdata.get('computed_styles') or "",
-                    accessibility=cdata.get('accessibility') or "",
-                    selected_text=cdata.get('selected_text') or "",
-                    bounding_box=cdata.get('bounding_box'),
-                    agentation_status=cdata.get('agentation_status') or "",
-                    window_title=cdata.get('window_title') or "",
-                ))
+                records.append(self._record_from_row(row, cdata))
         return records
 
     def get(self, capture_id: str) -> Optional[CaptureRecord]:
@@ -110,23 +95,7 @@ class CaptureStore:
                 return None
                 
             cdata = json.loads(row['context_data']) if row['context_data'] else {}
-            return CaptureRecord(
-                id=row['capture_id'],
-                timestamp=row['created_at'],
-                annotation_text=row['voice_transcript'],
-                screenshot_path=row['screenshot_path'],
-                cursor_x=cdata.get('cursor_x', 0),
-                cursor_y=cdata.get('cursor_y', 0),
-                element_selector=cdata.get('element_selector') or "",
-                element_path=cdata.get('element_path') or "",
-                react_components=cdata.get('react_components') or "",
-                computed_styles=cdata.get('computed_styles') or "",
-                accessibility=cdata.get('accessibility') or "",
-                selected_text=cdata.get('selected_text') or "",
-                bounding_box=cdata.get('bounding_box'),
-                agentation_status=cdata.get('agentation_status') or "",
-                window_title=cdata.get('window_title') or "",
-            )
+            return self._record_from_row(row, cdata)
 
     def update(self, record: CaptureRecord) -> None:
         self.add(record)
@@ -144,3 +113,30 @@ class CaptureStore:
             # Deleting session triggers CASCADE DELETE on assets, contexts, annotations
             conn.execute('DELETE FROM sessions WHERE capture_id = ?', (capture_id,))
             conn.commit()
+
+    @staticmethod
+    def _record_from_row(row, cdata: dict) -> CaptureRecord:
+        change_request = cdata.get('change_request')
+        if isinstance(change_request, str):
+            try:
+                change_request = json.loads(change_request)
+            except json.JSONDecodeError:
+                change_request = None
+        return CaptureRecord(
+            id=row['capture_id'],
+            timestamp=row['created_at'],
+            annotation_text=row['voice_transcript'],
+            screenshot_path=row['screenshot_path'],
+            cursor_x=cdata.get('cursor_x', 0),
+            cursor_y=cdata.get('cursor_y', 0),
+            element_selector=cdata.get('element_selector') or "",
+            element_path=cdata.get('element_path') or "",
+            react_components=cdata.get('react_components') or "",
+            computed_styles=cdata.get('computed_styles') or "",
+            accessibility=cdata.get('accessibility') or "",
+            selected_text=cdata.get('selected_text') or "",
+            bounding_box=cdata.get('bounding_box'),
+            agentation_status=cdata.get('agentation_status') or "",
+            window_title=cdata.get('window_title') or "",
+            change_request=change_request,
+        )

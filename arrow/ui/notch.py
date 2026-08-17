@@ -1,6 +1,7 @@
 import math
 import os
 import random
+import threading
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -37,7 +38,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
+from arrow.storage.settings import get_project_dir, set_project_dir
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -253,22 +256,110 @@ class ThinkingSpinnerWidget(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Change-request formatting helpers
+# ---------------------------------------------------------------------------
+
+INTENT_LABELS = {
+    "move_element": "Move element",
+    "resize_element": "Resize element",
+    "restyle_element": "Restyle element",
+    "replace_content": "Replace content",
+    "remove_element": "Remove element",
+    "add_element": "Add element",
+    "align_elements": "Align elements",
+    "change_spacing": "Change spacing",
+    "change_responsive_behavior": "Change responsive behavior",
+    "fix_interaction": "Fix interaction",
+    "fix_visual_bug": "Fix visual bug",
+    "inspect_or_explain": "Inspect / explain",
+    "unknown": "Unknown",
+}
+
+
+def _anchor_label(anchor: dict) -> str:
+    """Best human-readable label for a source/destination anchor."""
+    if not anchor:
+        return ""
+    label = anchor.get("label")
+    if label:
+        return label
+    element = anchor.get("element") or {}
+    return (
+        element.get("name")
+        or element.get("text")
+        or anchor.get("selector")
+        or (anchor.get("geometry") and "selected region")
+        or ""
+    )
+
+
+def format_change_request(cr: dict) -> str:
+    """Render a compiled change request as a paste-ready prompt (Codex/Claude/IDE)."""
+    if not cr:
+        return ""
+    intent = INTENT_LABELS.get(cr.get("normalized_intent", ""), cr.get("normalized_intent", "unknown"))
+
+    lines = ["## Arrow change request"]
+    lines.append(f"**Intent:** {intent}")
+    if cr.get("summary"):
+        lines.append(f"**Summary:** {cr['summary']}")
+    if cr.get("raw_user_request"):
+        lines.append(f"**Instruction:** {cr['raw_user_request']}")
+
+    src_label = _anchor_label(cr.get("source") or {})
+    dst_label = _anchor_label(cr.get("destination") or {})
+    if src_label:
+        lines.append(f"**Source:** {src_label}")
+    if dst_label:
+        lines.append(f"**Destination:** {dst_label}")
+    if cr.get("move_relationship"):
+        lines.append(f"**Move relationship:** {cr['move_relationship']}")
+    if cr.get("confidence") is not None:
+        lines.append(f"**Confidence:** {round(cr['confidence'], 2)}")
+
+    files = cr.get("likely_files") or []
+    if files:
+        f = files[0]
+        loc = f["source_file"]
+        if f.get("source_line") is not None:
+            loc += f":{f['source_line']}"
+        lines.append(f"**Likely file:** {loc}")
+
+    for op in (cr.get("requested_changes") or []):
+        lines.append(f"- {op.get('description', '')}")
+
+    for title, key in (("Acceptance criteria", "acceptance_criteria"), ("Constraints", "constraints")):
+        items = cr.get(key) or []
+        if items:
+            lines.append(f"**{title}:**")
+            lines.extend(f"- {c}" for c in items)
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # ScreenshotThumbnail  – clickable thumbnail with delete, copy, send-to-AI
 # ---------------------------------------------------------------------------
 class ScreenshotThumbnail(QFrame):
     deleted = pyqtSignal(object)
+    provider_finished = pyqtSignal(object, object, object)  # event, request, name
 
-    def __init__(self, path, annotation_text="", timestamp="", window_title="", parent=None):
+    def __init__(self, path, annotation_text="", timestamp="", window_title="",
+                 change_request=None, parent=None):
         super().__init__(parent)
         self._path = path
         self._text = annotation_text
         self._timestamp = timestamp
         self._window_title = window_title
+        self._change_request = change_request or {}
         self._preview = None
+        self._provider_buttons = {}
+        # Queued: emitted from a worker thread, delivered on the main thread.
+        self.provider_finished.connect(self._on_provider_finished)
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setFixedSize(320, 260)
+        self.setFixedSize(320, 400)
         self.setStyleSheet("""
             ScreenshotThumbnail {
                 background: #18181b;
@@ -326,6 +417,10 @@ class ScreenshotThumbnail(QFrame):
         text_lbl.setStyleSheet("color: #F8FAFC; font-size: 13px; font-weight: 600; line-height: 1.4;")
         text_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         text_layout.addWidget(text_lbl)
+
+        # Compiled intent panel (from the orchestrator's change request)
+        if self._change_request:
+            text_layout.addWidget(self._build_intent_panel())
 
         text_layout.addStretch()
 
@@ -386,6 +481,181 @@ class ScreenshotThumbnail(QFrame):
         except Exception:
             pass
 
+    def _build_intent_panel(self):
+        """Compact card section showing the compiled change request."""
+        cr = self._change_request
+        panel = QFrame()
+        panel.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,6);
+                border: 1px solid rgba(255,255,255,8);
+                border-radius: 10px;
+            }
+        """)
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+
+        intent = INTENT_LABELS.get(cr.get("normalized_intent", ""), "Unknown")
+        chip = QLabel(intent)
+        chip.setStyleSheet("""
+            background: rgba(167,139,250,30);
+            color: #C4B5FD;
+            border-radius: 8px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 700;
+        """)
+        header.addWidget(chip)
+
+        conf = cr.get("confidence")
+        if conf is not None:
+            conf_lbl = QLabel(f"{round(conf * 100)}%")
+            conf_lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: 600; border: none;")
+            header.addWidget(conf_lbl)
+
+        header.addStretch()
+        v.addLayout(header)
+
+        # Action row: copy the request, or send it straight to a coding agent.
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+
+        copy_btn = self._action_button("📋 Copy", self._copy_request)
+        btn_row.addWidget(copy_btn)
+
+        self._provider_buttons = {}
+        for name in ("Codex", "Claude Code"):
+            btn = self._action_button(f"▶ {name}", lambda _=False, n=name: self._send_to_provider(n))
+            btn.setEnabled(self._provider_available(name))
+            if not btn.isEnabled():
+                btn.setToolTip(f"{name} CLI not found on PATH")
+            self._provider_buttons[name] = btn
+            btn_row.addWidget(btn)
+
+        btn_row.addStretch()
+        v.addLayout(btn_row)
+
+        if cr.get("summary"):
+            summary = QLabel(cr["summary"])
+            summary.setWordWrap(True)
+            summary.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 500; border: none;")
+            v.addWidget(summary)
+
+        src = _anchor_label(cr.get("source") or {})
+        dst = _anchor_label(cr.get("destination") or {})
+        if src or dst:
+            arrow_lbl = QLabel(f"{src or '…'}  →  {dst or '…'}")
+            arrow_lbl.setWordWrap(True)
+            arrow_lbl.setStyleSheet("color: #7DD3FC; font-size: 11px; font-weight: 500; border: none;")
+            v.addWidget(arrow_lbl)
+
+        files = cr.get("likely_files") or []
+        if files:
+            f = files[0]
+            loc = f["source_file"]
+            if f.get("source_line") is not None:
+                loc += f":{f['source_line']}"
+            file_lbl = QLabel(f"📄 {loc}")
+            file_lbl.setStyleSheet("color: #94A3B8; font-size: 10px; font-family: Consolas, monospace; border: none;")
+            v.addWidget(file_lbl)
+
+        return panel
+
+    @staticmethod
+    def _action_button(text, slot):
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,10);
+                color: white;
+                border-radius: 10px;
+                padding: 4px 10px;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(255,255,255,18); }
+            QPushButton:disabled { color: rgba(255,255,255,45); }
+        """)
+        btn.clicked.connect(slot)
+        return btn
+
+    @staticmethod
+    def _provider_available(name: str) -> bool:
+        try:
+            return create_provider(name).detect()
+        except Exception:
+            return False
+
+    def _copy_request(self):
+        """Copy a paste-ready change request (with screenshot path) to the clipboard."""
+        text = format_change_request(self._change_request)
+        if not text:
+            return
+        if self._path:
+            text += f"\n**Screenshot:** {self._path}"
+        QApplication.clipboard().setText(text)
+
+    def _send_to_provider(self, name: str):
+        """Send the compiled change request straight to Codex / Claude Code."""
+        cr = self._change_request
+        if not cr:
+            return
+
+        request = build_run_request(
+            cr.get("capture_id") or "",
+            cr,
+            format_change_request(cr),
+            fallback_repo=get_project_dir(),
+        )
+        if request is None:
+            QMessageBox.warning(
+                self, f"Send to {name}",
+                "No repository is attached to this capture, so there is nowhere safe to work. "
+                "Select a repository first.",
+            )
+            return
+
+        try:
+            provider = create_provider(name)
+        except ValueError as e:
+            QMessageBox.warning(self, "Send", str(e))
+            return
+        if not provider.detect():
+            QMessageBox.warning(self, name, f"{name} CLI was not found on PATH.")
+            return
+
+        self._set_sending(True, name)
+        threading.Thread(
+            target=self._run_provider_thread, args=(provider, request, name), daemon=True
+        ).start()
+
+    def _run_provider_thread(self, provider, request, name: str):
+        final = run_provider_sync(provider, request)
+        # Emitting a queued signal is thread-safe and delivers on the main thread.
+        self.provider_finished.emit(final, request, name)
+
+    def _on_provider_finished(self, final, request, name: str):
+        self._set_sending(False, name)
+        box = QMessageBox(self)
+        box.setWindowTitle(f"{name} run finished")
+        box.setIcon(QMessageBox.Icon.Information if final.type == "done" else QMessageBox.Icon.Warning)
+        box.setText(f"{final.message or final.type}\n\nCapture: {request.capture_id}")
+        box.exec()
+
+    def _set_sending(self, active: bool, name: str):
+        for n, btn in getattr(self, "_provider_buttons", {}).items():
+            btn.setEnabled(not active)
+            btn.setText(f"⏳ {n}" if active else f"▶ {n}")
+        if not active and self._provider_buttons:
+            for n, btn in self._provider_buttons.items():
+                if not self._provider_available(n):
+                    btn.setEnabled(False)
+
     def mouseDoubleClickEvent(self, event):
         if self._preview:
             dlg = QMessageBox(self)
@@ -441,6 +711,25 @@ class ScreenshotsView(QWidget):
 
         top.addWidget(pill_frame)
         top.addStretch()
+
+        self._repo_lbl = QLabel("")
+        self._repo_lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: 500; background: transparent; border: none;")
+        top.addWidget(self._repo_lbl)
+
+        repo_btn = QPushButton("📁")
+        repo_btn.setFixedSize(36, 36)
+        repo_btn.setToolTip("Select repository")
+        repo_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #A1A1AA;
+                font-size: 18px;
+                border: none;
+            }
+            QPushButton:hover { color: white; }
+        """)
+        repo_btn.clicked.connect(self._select_repository)
+        top.addWidget(repo_btn)
 
         doc_btn = QPushButton("📄")
         doc_btn.setFixedSize(36, 36)
@@ -542,6 +831,38 @@ class ScreenshotsView(QWidget):
         self._scroll.setWidget(self._container)
         layout.addWidget(self._scroll, 1)
 
+        self._refresh_repo_label()
+
+    def _select_repository(self):
+        """Pick a project folder, persist it, and tell the orchestrator."""
+        from PyQt6.QtWidgets import QFileDialog
+
+        start = get_project_dir() or os.path.expanduser("~")
+        path = QFileDialog.getExistingDirectory(self, "Select project repository", start)
+        if not path:
+            return
+        set_project_dir(path)
+
+        parent_notch = self.window()
+        on_selected = getattr(parent_notch, "on_project_selected", None)
+        if on_selected:
+            try:
+                on_selected(path)
+            except Exception as e:
+                print("Failed to update orchestrator project dir:", e)
+
+        self._refresh_repo_label()
+
+    def _refresh_repo_label(self):
+        repo = get_project_dir()
+        if repo:
+            name = os.path.basename(repo.rstrip("\\/")) or repo
+            self._repo_lbl.setText(f"📁 {name}")
+            self._repo_lbl.setToolTip(repo)
+        else:
+            self._repo_lbl.setText("")
+            self._repo_lbl.setToolTip("")
+
     def _highlight(self):
         parent_notch = self.window()
         if hasattr(parent_notch, 'on_highlight_requested'):
@@ -551,8 +872,13 @@ class ScreenshotsView(QWidget):
         try:
             from arrow.storage.capture_store import CaptureStore
             store = CaptureStore()
-            texts = [rec.annotation_text for rec in store.get_all() if rec.annotation_text]
-            QApplication.clipboard().setText("\n\n".join(texts))
+            parts = []
+            for rec in store.get_all():
+                if rec.change_request:
+                    parts.append(format_change_request(rec.change_request))
+                elif rec.annotation_text:
+                    parts.append(rec.annotation_text)
+            QApplication.clipboard().setText("\n\n".join(parts))
         except Exception as e:
             QMessageBox.warning(self, "Copy Error", str(e))
 
@@ -585,13 +911,19 @@ class ScreenshotsView(QWidget):
         store = CaptureStore()
         for rec in store.get_all():
             if os.path.exists(rec.screenshot_path):
-                self._add_thumbnail(rec.screenshot_path, rec.annotation_text, rec.timestamp, getattr(rec, 'window_title', ''))
+                self._add_thumbnail(
+                    rec.screenshot_path,
+                    rec.annotation_text,
+                    rec.timestamp,
+                    getattr(rec, 'window_title', ''),
+                    getattr(rec, 'change_request', None),
+                )
 
         self._hbox.addStretch()
         self._all_btn.setText(f"All {len(self._thumbnails)}")
 
-    def _add_thumbnail(self, path, text="", timestamp="", window_title=""):
-        thumb = ScreenshotThumbnail(path, text, timestamp, window_title)
+    def _add_thumbnail(self, path, text="", timestamp="", window_title="", change_request=None):
+        thumb = ScreenshotThumbnail(path, text, timestamp, window_title, change_request)
         thumb.deleted.connect(self._remove_thumbnail)
         self._thumbnails.append(thumb)
 
