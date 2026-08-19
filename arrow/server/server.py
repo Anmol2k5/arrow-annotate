@@ -16,6 +16,7 @@ from functools import wraps
 import websockets
 from flask import Flask, jsonify, request, send_from_directory
 
+from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
 from arrow.server.security import (
@@ -26,6 +27,8 @@ from arrow.server.security import (
     is_localhost_origin,
     parse_bearer,
 )
+
+log = logging.getLogger("arrow.server")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
@@ -252,7 +255,10 @@ def screenshot():
     from PIL import Image
 
     with mss.mss() as sct:
-        monitor = sct.monitors[1]
+        from arrow.capture.coordinate_mapper import ScreenInfo
+        mon = sct.monitors[1]
+        screen = ScreenInfo(name="primary", geometry=(mon["left"], mon["top"], mon["width"], mon["height"]), scale=1.0)
+        monitor = find_mss_monitor(sct, screen)
         img = sct.grab(monitor)
         pil_img = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
 
@@ -398,7 +404,6 @@ def execute():
         "type": lambda: ctrl.type(target),
         "hotkey": lambda: ctrl.hotkey(target),
         "openapp": lambda: ctrl.open_app(target),
-        "analyze": lambda: _analyze_action(data),
     }
 
     handler = dispatch.get(action)
@@ -473,40 +478,6 @@ def execute_inner(action_data):
         return {"error": str(e), "type": action, "status": "error"}
 
 
-def _analyze_action(data: dict) -> dict:
-    """Placeholder analyze action for 'Send to AI' feature.
-
-    In production this would call an LLM endpoint. For now, returns a
-    structured suggestion based on the provided context.
-    """
-    transcript = data.get("transcript", "").strip()
-    window_title = data.get("window_title", "")
-    has_screenshot = bool(data.get("screenshot"))
-
-    suggestions = []
-    if transcript:
-        suggestions.append(f"Voice note: \"{transcript}\"")
-    if window_title:
-        suggestions.append(f"Context: {window_title}")
-    if has_screenshot:
-        suggestions.append("Screenshot captured — visual context available.")
-
-    suggestion_text = (
-        "Based on the captured context, consider:\n"
-        "• Review the highlighted region for layout or content issues\n"
-        "• Compare against design specifications\n"
-        "• Check accessibility and responsiveness"
-    )
-    if transcript:
-        suggestion_text = f"Regarding \"{transcript}\":\n" + suggestion_text
-
-    return {
-        "action": "analyze",
-        "status": "ok",
-        "suggestion": suggestion_text,
-        "context": suggestions,
-    }
-
 
 # ---------------------------------------------------------------------------
 # WebSocket Bridge  (connects to browser extension)
@@ -552,8 +523,8 @@ class WebSocketBridge:
         self._loop.run_until_complete(self._serve())
 
     async def _serve(self):
-        self._ready.set()
         async with websockets.serve(self._handler, self.host, self.port):
+            self._ready.set()
             await asyncio.Future()
 
     async def _handler(self, websocket):
@@ -733,7 +704,9 @@ def highlight_capture():
     path = os.path.join(SCREENSHOTS_DIR, filename)
 
     with mss.mss() as sct:
-        monitor = sct.monitors[1]
+        from arrow.capture.coordinate_mapper import ScreenInfo
+        screen = ScreenInfo(name="overlay", geometry=(int(x), int(y), int(w), int(h)), scale=1.0)
+        monitor = find_mss_monitor(sct, screen)
         full = sct.grab(monitor)
         pil_full = Image.frombytes("RGB", full.size, full.rgb)
         cropped = pil_full.crop((int(x), int(y), int(x + w), int(y + h)))
@@ -846,7 +819,7 @@ class AgentServer:
         )
         self._ws_bridge.start()
         app.config["WS_BRIDGE"] = self._ws_bridge
-        print(f"[WSBridge] listening on ws://{self.ws_host}:{self.ws_port}")
+        log.info("[WSBridge] listening on ws://%s:%s", self.ws_host, self.ws_port)
 
         # Start Flask
         self._thread = threading.Thread(
@@ -855,7 +828,7 @@ class AgentServer:
             name="AgentServer",
         )
         self._thread.start()
-        print(f"[AgentServer] listening on http://{self.host}:{self.port}")
+        log.info("[AgentServer] listening on http://%s:%s", self.host, self.port)
 
     def _run(self):
         app.run(host=self.host, port=self.port, threaded=True, debug=False, use_reloader=False)

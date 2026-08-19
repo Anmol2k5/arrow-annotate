@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import random
@@ -43,6 +44,8 @@ from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, set_project_dir
+
+log = logging.getLogger("arrow.ui.notch")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -397,7 +400,7 @@ class ScreenshotThumbnail(QFrame):
         if not app_name:
             app_name = "App"
 
-        self._badge = QLabel("App", img_container)
+        self._badge = QLabel(app_name, img_container)
         self._badge.setStyleSheet("""
             background: rgba(80,80,80,200);
             color: white;
@@ -618,7 +621,7 @@ class ScreenshotThumbnail(QFrame):
                     annotation_text=new_instruction or None,
                 )
             except Exception as e:
-                print("Failed to persist edited change request:", e)
+                log.error("Failed to persist edited change request: %s", e)
 
         self._fill_intent_content()
 
@@ -906,7 +909,7 @@ class ScreenshotsView(QWidget):
             try:
                 on_selected(path)
             except Exception as e:
-                print("Failed to update orchestrator project dir:", e)
+                log.error("Failed to update orchestrator project dir: %s", e)
 
         self._refresh_repo_label()
 
@@ -944,14 +947,17 @@ class ScreenshotsView(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             from arrow.storage.capture_store import CaptureStore
             store = CaptureStore()
+            failed = []
             for rec in store.get_all():
                 store.delete(rec.id)
                 if os.path.exists(rec.screenshot_path):
                     try:
                         os.remove(rec.screenshot_path)
                     except Exception:
-                        pass
+                        failed.append(rec.screenshot_path)
             self._scan_existing()
+            if failed:
+                QMessageBox.warning(self, "Partial Cleanup", f"Removed from library but could not delete {len(failed)} file(s):\n" + "\n".join(failed))
 
     def _scan_existing(self):
         for thumb in self._thumbnails:

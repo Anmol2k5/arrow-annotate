@@ -1,4 +1,5 @@
 import ctypes
+import logging
 import os
 import signal
 import sys
@@ -17,6 +18,8 @@ from arrow.storage.settings import get_project_dir
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.voice_input import VoiceInput
+
+log = logging.getLogger("arrow.app")
 
 
 def _get_cursor_position():
@@ -121,7 +124,7 @@ def main():
         session = session_manager.active_session
         if not session or session.capture_id != capture_id:
             return
-        print("Voice error:", err)
+        log.error("Voice error: %s", err)
         if is_annotating:
             toggle_annotation()
 
@@ -206,7 +209,7 @@ def main():
                     mapper=mapper,
                 )
             except Exception as e:
-                print("Capture pipeline failed:", e)
+                log.error("Capture pipeline failed: %s", e)
                 try:
                     session_manager.transition_to(CaptureState.FAILED)
                 except ValueError:
@@ -214,7 +217,7 @@ def main():
                 return
 
             if pipeline.error:
-                print("Capture pipeline error:", pipeline.error)
+                log.error("Capture pipeline error: %s", pipeline.error)
                 try:
                     session_manager.transition_to(CaptureState.FAILED)
                 except ValueError:
@@ -276,7 +279,7 @@ def main():
             if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
                 session_manager.transition_to(CaptureState.COMPLETED)
         except Exception as e:
-            print("Agentation sync failed:", e)
+            log.error("Agentation sync failed: %s", e)
             if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
                 try:
                     session_manager.transition_to(CaptureState.FAILED)
@@ -290,7 +293,7 @@ def main():
         import keyboard
         keyboard.add_hotkey("ctrl+shift+space", toggle_annotation)
     except Exception as e:
-        print(f"Warning: could not register global hotkey: {e}")
+        log.warning("Could not register global hotkey: %s", e)
 
     # -- Poll server status every 5s --
     def poll_server():

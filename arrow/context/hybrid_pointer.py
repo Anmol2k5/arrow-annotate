@@ -170,8 +170,6 @@ def _find_via_uia(query: str, min_score: float = 0.5) -> Optional[Target]:
     cy = (r.top + r.bottom) // 2
     log.info("UIA hit: %r -> %s [%s] @ (%d,%d) score=%.2f",
              query, node.Name, node.ControlTypeName, cx, cy, score)
-    print(f"[HybridPointer] UIA hit: '{node.Name}' [{node.ControlTypeName}] "
-          f"@ ({cx},{cy}) score={score:.2f}", flush=True)
     return Target(
         x=cx, y=cy,
         bbox=(r.left, r.top, r.right, r.bottom),
@@ -213,8 +211,13 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
     try:
         if pil_image is None and screenshot_path is None:
             import mss
+
+            from arrow.capture.coordinate_mapper import ScreenInfo
+            from arrow.capture.screenshot_service import find_mss_monitor
             with mss.mss() as sct:
-                mon = sct.monitors[1]
+                primary = sct.monitors[1]
+                screen = ScreenInfo(name="primary", geometry=(primary["left"], primary["top"], primary["width"], primary["height"]), scale=1.0)
+                mon = find_mss_monitor(sct, screen)
                 raw = sct.grab(mon)
                 from PIL import Image
                 pil_image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
@@ -257,8 +260,6 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
         cx, cy = (left + right) // 2, (top + bottom) // 2
         log.info("OCR hit: %r -> %r @ (%d,%d) score=%.2f",
                  query, hit["text"], cx, cy, score)
-        print(f"[HybridPointer] OCR hit: '{hit['text']}' @ ({cx},{cy}) "
-              f"score={score:.2f}", flush=True)
         return Target(
             x=cx, y=cy, bbox=hit["bbox"],
             label=hit["text"], source="ocr",
