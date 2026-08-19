@@ -93,8 +93,21 @@ class TokenManager:
                 f.write(token)
             try:
                 os.chmod(self._path, 0o600)
+                import platform
+                if platform.system() == "Windows":
+                    import subprocess
+                    username = os.environ.get("USERNAME")
+                    if username:
+                        subprocess.run(
+                            ["icacls", self._path, "/inheritance:r", "/grant", f"{username}:F"],
+                            check=True,
+                            capture_output=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        )
             except OSError:  # pragma: no cover - platform dependent
                 pass
+            except Exception as e:
+                log.warning("Failed to set Windows ACLs on token file: %s", e)
             self._token = token
             return token
 

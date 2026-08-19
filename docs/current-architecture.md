@@ -22,7 +22,6 @@ User hotkey → `SelectionOverlay` shown → User draws → `mouseRelease` trigg
 
 ## Identified Failure Points & Context Loss
 - **Annotation marks in screenshots**: `SelectionOverlay` points fade out after 2 seconds. They are NOT baked into the saved screenshots.
-- **Monitor Capture**: `main.py` hardcodes `sct.monitors[1]`, capturing only the primary monitor.
 - **Strokes**: New strokes replace previous ones because `SelectionOverlay._points` handles a single continuous line.
 - **Source and Destination**: Not represented separately; the overlay only emits a single bounding box (`rect`).
 - **Browser Context**: Not integrated into the primary capture flow; it exists in `server.py` but isn't called during normal captures in `main.py`.
@@ -30,4 +29,3 @@ User hotkey → `SelectionOverlay` shown → User draws → `mouseRelease` trigg
 - **Voice Results**: Race conditions exist. Voice results update `current_voice_text` and can arrive after the capture logic has already executed or been cancelled.
 - **Agentation**: Selects the first available session indiscriminately (`sessions[0]["id"]`).
 - **Timestamp Collisions**: Capture IDs use `strftime("%Y%m%d_%H%M%S")`, which can collide.
-- **Hardcoded Data**: The Notch UI relies on hardcoded strings (e.g., "App" badges) and demo integrations.

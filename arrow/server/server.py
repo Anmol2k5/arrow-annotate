@@ -249,6 +249,7 @@ def status():
 
 
 @app.route("/screenshot", methods=["GET"])
+@require_capability(Capability.READ_SCREENSHOT)
 def screenshot():
     """Capture primary screen → base64 JPEG."""
     import mss
@@ -275,6 +276,7 @@ def screenshot():
 
 
 @app.route("/screenshots/<path:filename>")
+@require_capability(Capability.READ_SCREENSHOT)
 def serve_screenshot_file(filename):
     """Serve captured screenshot files for Agentation MCP to reference."""
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
@@ -282,6 +284,7 @@ def serve_screenshot_file(filename):
 
 
 @app.route("/screenshots/save", methods=["POST"])
+@require_capability(Capability.READ_SCREENSHOT)
 def save_screenshot():
     """Save a base64-encoded screenshot and return its URL.
 
@@ -344,6 +347,7 @@ def _resolve_target(action: str, target: str, x, y):
 
 
 @app.route("/resolve", methods=["POST"])
+@require_capability(Capability.READ_CAPTURE_CONTEXT)
 def resolve():
     """Resolve a text query to screen coordinates via UIA + OCR.
 
@@ -611,6 +615,7 @@ class WebSocketBridge:
 # ---------------------------------------------------------------------------
 
 @app.route("/inspect", methods=["POST"])
+@require_capability(Capability.READ_CAPTURE_CONTEXT)
 def inspect_web():
     """Inspect a DOM element at (x, y) in the active browser tab.
 
@@ -641,6 +646,7 @@ def inspect_web():
 # ---------------------------------------------------------------------------
 
 @app.route("/highlight/resolve", methods=["POST"])
+@require_capability(Capability.READ_CAPTURE_CONTEXT)
 def highlight_resolve():
     """Resolve a highlighted screen region into source context.
 
@@ -674,6 +680,7 @@ def highlight_resolve():
 
 
 @app.route("/highlight/capture", methods=["POST"])
+@require_capability(Capability.READ_SCREENSHOT)
 def highlight_capture():
     """Capture a highlighted screen region as a cropped screenshot.
 

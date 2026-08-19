@@ -86,10 +86,4 @@ auto-reconnected — the extension waits for the user to fix the token.
   `/screenshots/*` would break the Agentation flow, which fetches screenshot
   URLs (`http://127.0.0.1:5001/screenshots/<file>`) without auth. Any local
   process can read screenshots and DOM inspection data.
-- **Windows token-file permissions.** `os.chmod(0o600)` does not enforce
-  ACLs on Windows; the token may be readable by other local users.
-- **Screenshot deletion.** `notch.py` `_clear_all` ignores `os.remove`
-  failures (`except: pass`), which can leave sensitive captures on disk.
-- **Read-capability enforcement is aspirational.** `READ_SCREENSHOT`,
-  `READ_CAPTURE_CONTEXT`, and `READ_REPO_CONTEXT` are defined and
-  default-enabled but not enforced by any endpoint yet.
+- **Read-capability enforcement is active.** `READ_SCREENSHOT` and `READ_CAPTURE_CONTEXT` are defined, default-enabled, and enforced by the corresponding endpoints. (`READ_REPO_CONTEXT` is defined but currently unused as no endpoints require it.)

@@ -213,3 +213,35 @@ def test_batch_and_highlight_execute_gated(client):
     assert resp.status_code == 401
     resp = client.post("/highlight/execute", json={"rect": {}, "action": {}})
     assert resp.status_code == 401
+
+
+def test_read_screenshot_gated(client):
+    # READ_SCREENSHOT is enabled by default, so we disable it to test gating
+    srv.app.config["CAPABILITIES"].disable(Capability.READ_SCREENSHOT)
+    
+    resp = client.get(
+        "/screenshot",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+    assert resp.status_code == 403
+    assert "disabled" in resp.get_json()["error"]
+
+    srv.app.config["CAPABILITIES"].enable(Capability.READ_SCREENSHOT)
+    resp2 = client.get(
+        "/screenshot",
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+    # the capability check passes, might fail later with 500 if no screen, but not 403
+    assert resp2.status_code not in (401, 403)
+
+
+def test_read_capture_context_gated(client):
+    srv.app.config["CAPABILITIES"].disable(Capability.READ_CAPTURE_CONTEXT)
+    
+    resp = client.post(
+        "/resolve",
+        json={"query": "test"},
+        headers={"Authorization": f"Bearer {_token()}"},
+    )
+    assert resp.status_code == 403
+    assert "disabled" in resp.get_json()["error"]
