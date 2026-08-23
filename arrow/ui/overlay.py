@@ -2,18 +2,17 @@ import math
 import time
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
 DEST_RGB = (34, 197, 94)         # Green
-ACTIVE_RGB = (167, 139, 250)     # Purple (live stroke / comet trail)
-
+ACTIVE_RGB = (59, 130, 246)      # Neon Blue
 SOURCE_CORE = (255, 214, 214)
 DEST_CORE = (214, 255, 228)
-ACTIVE_CORE = (230, 220, 255)
+ACTIVE_CORE = (219, 234, 254)    # Light Blue
 
 MARKER_LABELS = {"source": "Current", "destination": "Move here"}
 
@@ -108,6 +107,26 @@ class SelectionOverlay(QWidget):
 
         self._offset = QPointF(0, 0)
 
+    def get_gesture_trail(self) -> list[dict]:
+        """Export all locked strokes as serializable gesture data.
+
+        Returns a list of ``{t, x, y, role}`` dicts, one per point,
+        in chronological order.  Coordinates are in virtual-desktop space
+        (offset already applied).
+        """
+        trail: list[dict] = []
+        for stroke in self._strokes:
+            if not stroke.locked:
+                continue
+            for sp in stroke.points:
+                trail.append({
+                    "t": sp.timestamp,
+                    "x": sp.point.x() + self._offset.x(),
+                    "y": sp.point.y() + self._offset.y(),
+                    "role": stroke.role,
+                })
+        return trail
+
     def _update_geometry(self):
         screens = QApplication.screens()
         if screens:
@@ -121,6 +140,7 @@ class SelectionOverlay(QWidget):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @pyqtSlot()
     def show_overlay(self):
         """Called when hotkey is pressed."""
         self._update_geometry()
@@ -133,6 +153,7 @@ class SelectionOverlay(QWidget):
         self.raise_()
         self.activateWindow()
 
+    @pyqtSlot()
     def hide_overlay(self):
         """Called when hotkey is released; emits the completed selection."""
         self._active = False
@@ -336,6 +357,45 @@ class SelectionOverlay(QWidget):
             painter.setPen(core)
             painter.drawPath(path)
 
+    def _draw_pointer_head(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
+                           rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
+        """Draw an arrowhead at the tip of the live trail."""
+        if len(trail) < 5:
+            return
+
+        # Use a point slightly further back to calculate a stable angle
+        p1, a1 = trail[-5]
+        p2, a2 = trail[-1]
+        
+        # Don't draw if fully faded
+        if a2 <= 0.05:
+            return
+
+        # Calculate angle
+        angle = math.atan2(p2.y() - p1.y(), p2.x() - p1.x())
+
+        arrow_len = 22.0
+        arrow_angle = math.pi / 7
+
+        # Points of the arrowhead
+        tip = QPointF(p2.x() + 4 * math.cos(angle), p2.y() + 4 * math.sin(angle))
+        left = QPointF(tip.x() - arrow_len * math.cos(angle - arrow_angle),
+                       tip.y() - arrow_len * math.sin(angle - arrow_angle))
+        right = QPointF(tip.x() - arrow_len * math.cos(angle + arrow_angle),
+                        tip.y() - arrow_len * math.sin(angle + arrow_angle))
+        
+        # Draw outer glow
+        r, g, b = rgb
+        painter.setBrush(QColor(r, g, b, int(180 * a2)))
+        painter.setPen(QPen(QColor(r, g, b, int(80 * a2)), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPolygon([tip, left, right])
+
+        # Draw inner core
+        cr, cg, cb = core_rgb
+        painter.setBrush(QColor(cr, cg, cb, int(255 * a2)))
+        painter.setPen(QPen(QColor(cr, cg, cb, int(255 * a2)), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPolygon([tip, left, right])
+
     # ------------------------------------------------------------------
     # Markers + arrow
     # ------------------------------------------------------------------
@@ -403,6 +463,10 @@ class SelectionOverlay(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw a nearly transparent background to intercept mouse events on Windows
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        
         now = time.time()
 
         locked = [s for s in self._strokes if s.locked and len(s.points) >= 2]
@@ -429,5 +493,6 @@ class SelectionOverlay(QWidget):
         if self._current_stroke is not None and len(self._current_stroke.points) >= 2:
             trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
             self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
+            self._draw_pointer_head(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
 
         painter.end()

@@ -120,6 +120,46 @@ TOOL_SCHEMAS: list[dict] = [
             "required": ["capture_id", "note"],
         },
     },
+    {
+        "name": "arrow_get_ax_tree",
+        "description": "Get the accessibility tree snapshot at a screen point. Returns a lightweight {role, name, bounds, children} tree. Much cheaper in tokens than a screenshot.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Screen X coordinate"},
+                "y": {"type": "integer", "description": "Screen Y coordinate"},
+                "depth": {"type": "integer", "default": 3},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "arrow_look",
+        "description": "Take a fresh screenshot of the screen to verify your changes. Returns a token-optimized image (<=1568px long edge). Use this to check your own work.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "object",
+                    "description": "Optional region {x, y, width, height} in screen coordinates. Omit to capture the primary monitor.",
+                    "properties": {
+                        "x": {"type": "integer"},
+                        "y": {"type": "integer"},
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                },
+            },
+        },
+    },
+    {
+        "name": "arrow_get_context_md",
+        "description": "Get the context.md text for a capture. Contains instruction, source/destination context, AX tree, gesture trail, change request summary.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 
@@ -138,6 +178,9 @@ class ArrowTools:
             "arrow_mark_completed": self._mark_completed,
             "arrow_mark_failed": self._mark_failed,
             "arrow_add_agent_note": self._add_note,
+            "arrow_get_ax_tree": self._ax_tree,
+            "arrow_look": self._look,
+            "arrow_get_context_md": self._context_md,
         }
 
     def names(self) -> list[str]:
@@ -230,6 +273,44 @@ class ArrowTools:
             raise ToolError("note is required")
         self.repo.set_status(cap["capture_id"], cap["status"], f"agent note: {note}")
         return {"ok": True}
+
+    # -- spatial context tools -------------------------------------------
+
+    def _ax_tree(self, args: dict) -> Any:
+        x = args.get("x")
+        y = args.get("y")
+        if x is None or y is None:
+            raise ToolError("x and y are required")
+        depth = int(args.get("depth", 3))
+        from arrow.context.ax_tree import snapshot_ax_tree
+        return snapshot_ax_tree(int(x), int(y), depth=depth)
+
+    def _look(self, args: dict) -> Any:
+        import base64
+        from io import BytesIO
+        from arrow.capture.screenshot_service import ScreenshotService
+        svc = ScreenshotService()
+        region = args.get("region")
+        img = svc.capture_headless(region)
+        img = svc.downscale_for_agent(img)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        blob = base64.b64encode(buf.getvalue()).decode("ascii")
+        return {
+            "width": img.size[0],
+            "height": img.size[1],
+            "format": "png",
+            "base64": blob,
+        }
+
+    def _context_md(self, args: dict) -> Any:
+        import os
+        from arrow.capture.context_file import LATEST_DIR
+        path = os.path.join(LATEST_DIR, "context.md")
+        if not os.path.isfile(path):
+            raise ToolError("No context.md available. Make a capture first.")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
 
 
 __all__ = ["ArrowTools", "ToolError", "TOOL_SCHEMAS"]

@@ -12,6 +12,10 @@ from arrow.capture.session import Annotation
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 
+# Claude vision pricing: ~width*height/750 tokens. At 1568px long edge a
+# Retina frame costs ~2100 tokens instead of the 232K a raw capture costs.
+MAX_AGENT_EDGE = 1568
+
 
 def find_mss_monitor(sct: Any, screen: ScreenInfo) -> Dict[str, Any]:
     """Finds the mss monitor dict matching ScreenInfo's layout."""
@@ -61,6 +65,42 @@ class ScreenshotService:
             overlay_widget.raise_()
 
         return raw_img, screen_info, mapper
+
+    @staticmethod
+    def downscale_for_agent(img: Image.Image, max_edge: int = MAX_AGENT_EDGE) -> Image.Image:
+        """Resize so the long edge is at most *max_edge* pixels.
+
+        Returns the original image untouched when it already fits.
+        """
+        w, h = img.size
+        long = max(w, h)
+        if long <= max_edge:
+            return img
+        ratio = max_edge / long
+        return img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+    def capture_headless(self, region: Optional[Dict[str, int]] = None) -> Image.Image:
+        """Capture the screen without touching any overlay widget.
+
+        Used by the agent verification loop (``arrow_look`` MCP tool) so the
+        agent can check its own work without user interaction.
+
+        Args:
+            region: Optional ``{"x", "y", "width", "height"}`` in virtual
+                desktop coords. When omitted, captures the primary monitor.
+        """
+        with mss.mss() as sct:
+            if region:
+                monitor = {
+                    "left": region["x"],
+                    "top": region["y"],
+                    "width": region["width"],
+                    "height": region["height"],
+                }
+            else:
+                monitor = sct.monitors[1]  # primary
+            sct_img = sct.grab(monitor)
+            return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
     def render_annotations(self, raw_img: Image.Image, annotations: List[Annotation], mapper: CoordinateMapper) -> Image.Image:
         """

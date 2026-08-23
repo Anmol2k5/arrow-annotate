@@ -31,6 +31,7 @@ from typing import Any, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from arrow.capture.context_file import build_context_md, mirror_latest
 from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
 from arrow.capture.screenshot_service import SCREENSHOTS_DIR, ScreenshotService
 from arrow.capture.session import Annotation, CaptureSession
@@ -163,6 +164,10 @@ class ContextOrchestrator:
                 raw_img, annotations, mapper
             )
 
+            # 4b. Agent-optimized copies (≤1568px long edge, ~2K tokens each).
+            agent_annotated = self.screenshot_service.downscale_for_agent(annotated_img)
+            agent_crop = self.screenshot_service.downscale_for_agent(context_crop)
+
             # 5. Persist assets.
             assets = self._save_assets(
                 session.capture_id,
@@ -171,6 +176,8 @@ class ContextOrchestrator:
                 context_crop=context_crop,
                 source_crop=source_crop,
                 dest_crop=dest_crop,
+                agent_annotated=agent_annotated,
+                agent_crop=agent_crop,
             )
 
             # 6. Compile the structured change request.
@@ -215,6 +222,27 @@ class ContextOrchestrator:
                 "source": (source.to_dict() if source else None),
                 "destination": (destination.to_dict() if destination else None),
             }
+
+            # 9. Build context.md and mirror to ~/.arrow/latest/.
+            context_md = build_context_md(
+                capture_id=session.capture_id,
+                instruction=instruction,
+                source_context=(source.context if source else None),
+                destination_context=(destination.context if destination else None),
+                repository=repo.to_dict(),
+                change_request=change_request.to_dict(),
+                annotated_path=assets["annotated"],
+                agent_annotated_path=assets.get("agent-annotated"),
+            )
+            try:
+                mirror_latest(
+                    annotated_path=assets.get("agent-annotated", assets["annotated"]),
+                    context_md=context_md,
+                    capture_id=session.capture_id,
+                    assets=assets,
+                )
+            except Exception:
+                log.warning("Failed to mirror latest capture", exc_info=True)
 
             return PipelineResult(
                 capture_id=session.capture_id,
@@ -389,7 +417,8 @@ class ContextOrchestrator:
     # ------------------------------------------------------------------
 
     def _save_assets(self, capture_id: str, raw_img, annotated_img, context_crop,
-                     source_crop, dest_crop) -> dict:
+                     source_crop, dest_crop,
+                     agent_annotated=None, agent_crop=None) -> dict:
         os.makedirs(self.screenshots_dir, exist_ok=True)
         safe_id = capture_id.replace(":", "_")
         paths = {
@@ -407,6 +436,15 @@ class ContextOrchestrator:
         if dest_crop is not None:
             paths["destination_crop"] = os.path.join(self.screenshots_dir, f"destination_crop_{safe_id}.png")
             dest_crop.save(paths["destination_crop"], "PNG")
+
+        # Agent-optimized assets (≤1568px, served via MCP by default).
+        if agent_annotated is not None:
+            paths["agent-annotated"] = os.path.join(self.screenshots_dir, f"agent_annotated_{safe_id}.png")
+            agent_annotated.save(paths["agent-annotated"], "PNG")
+        if agent_crop is not None:
+            paths["agent-crop"] = os.path.join(self.screenshots_dir, f"agent_crop_{safe_id}.png")
+            agent_crop.save(paths["agent-crop"], "PNG")
+
         return paths
 
     # ------------------------------------------------------------------

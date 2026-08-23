@@ -92,17 +92,17 @@ def main():
             # Transition to ANNOTATING
             session_manager.transition_to(CaptureState.ANNOTATING)
 
-            QMetaObject.invokeMethod(overlay, "show_overlay", Qt.ConnectionType.QueuedConnection)
+            QTimer.singleShot(0, overlay.show_overlay)
             # Pass capture_id to voice input
-            QMetaObject.invokeMethod(voice, "start_listening", Qt.ConnectionType.QueuedConnection, capture_id)
+            QTimer.singleShot(0, lambda: voice.start_listening(capture_id))
             # Show waveform in notch idle pill
-            QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, True)
+            QTimer.singleShot(0, lambda: notch.set_recording(True))
         else:
             is_annotating = False
-            QMetaObject.invokeMethod(overlay, "hide_overlay", Qt.ConnectionType.QueuedConnection)
-            QMetaObject.invokeMethod(voice, "stop_listening", Qt.ConnectionType.QueuedConnection)
+            QTimer.singleShot(0, overlay.hide_overlay)
+            QTimer.singleShot(0, voice.stop_listening)
             # Restore logo in notch idle pill
-            QMetaObject.invokeMethod(notch, "set_recording", Qt.ConnectionType.QueuedConnection, False)
+            QTimer.singleShot(0, lambda: notch.set_recording(False))
             
             # If no selection comes, cancellation is handled in hide_overlay/on_selection
 
@@ -234,8 +234,8 @@ def main():
                 return
 
             # Update notch on main thread
-            QMetaObject.invokeMethod(notch, "refresh_screenshots", Qt.ConnectionType.QueuedConnection)
-            QMetaObject.invokeMethod(notch, "auto_expand_briefly", Qt.ConnectionType.QueuedConnection)
+            QTimer.singleShot(0, notch.refresh_screenshots)
+            QTimer.singleShot(0, notch.auto_expand_briefly)
 
             try:
                 session_manager.transition_to(CaptureState.SENDING)

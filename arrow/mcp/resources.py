@@ -26,6 +26,8 @@ _ASSET_KEYS = {
     "context-crop": "context-crop",
     "source-crop": "source-crop",
     "destination-crop": "destination-crop",
+    "agent-annotated": "agent-annotated",
+    "agent-crop": "agent-crop",
 }
 
 _URI_RE = re.compile(r"^arrow://captures/(?P<cid>[^/]+)/(?P<asset>[a-z-]+)$")
