@@ -142,6 +142,12 @@ class VoiceInput(QObject):
                 with self._lock:
                     capture_id = self.current_capture_id
                 self.error.emit("No microphone found", capture_id)
+        except sr.WaitTimeoutError:
+            # Benign: no speech arrived within listen()'s timeout. Stop this
+            # session cleanly without cancelling the capture — the user can
+            # still finish with the mouse or a typed instruction.
+            if self._serving(gen):
+                logger.info("No speech detected within timeout; stopping voice session")
         except Exception as e:
             if self._serving(gen):
                 with self._lock:

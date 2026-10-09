@@ -59,6 +59,7 @@ class FakeSpeechModule(types.ModuleType):
         self.mic_should_fail = False
         self.recognize_text = "hello world"
         self.recognize_error: type[Exception] | None = None
+        self.listen_error: type[Exception] | None = None
         self._listen_calls = 0
         self._recognize_calls = 0
 
@@ -68,6 +69,9 @@ class FakeSpeechModule(types.ModuleType):
             pass
 
         class RequestError(Exception):
+            pass
+
+        class WaitTimeoutError(Exception):
             pass
 
         class Microphone:
@@ -103,6 +107,8 @@ class FakeSpeechModule(types.ModuleType):
                         outer.mic_gates.append(threading.Event())
                     gate = outer.mic_gates[idx]
                 gate.wait(timeout=5.0)
+                if outer.listen_error is not None:
+                    raise outer.listen_error("no speech")
                 return f"AUDIO-{idx}"
 
             def recognize_google(self, audio):
@@ -123,6 +129,7 @@ class FakeSpeechModule(types.ModuleType):
 
         self.UnknownValueError = UnknownValueError
         self.RequestError = RequestError
+        self.WaitTimeoutError = WaitTimeoutError
         self.Microphone = Microphone
         self.Recognizer = Recognizer
 
@@ -278,6 +285,35 @@ def test_unknown_value_error_reports_and_stops(fake_sr):
     assert events["errors"][0][1] == "cap1"
     assert voice.is_listening is False
     assert events["results"] == []
+
+
+def test_wait_timeout_is_benign_and_does_not_cancel(fake_sr):
+    """No speech within listen()'s timeout must stop the voice session
+    quietly — no error signal (the app cancels the capture on voice errors),
+    no result, clean state for the next session."""
+    fake_sr.listen_error = fake_sr.WaitTimeoutError
+    voice, events = _make_voice()
+
+    voice.start_listening("cap1")
+    assert fake_sr.wait_for_listen_call(0)
+    fake_sr.release_listen(0)
+
+    assert _wait_until(lambda: voice.is_listening is False)
+    _qapp().processEvents()
+    assert events["errors"] == [], "WaitTimeoutError must not surface as a voice error"
+    assert events["results"] == []
+    assert events["listening"] == [True, False]
+
+    # The next session still works. (Its recognize call is index 0 — the
+    # timed-out first session never reached recognition.)
+    fake_sr.listen_error = None
+    voice.start_listening("cap2")
+    assert voice.is_listening is True
+    assert fake_sr.wait_for_listen_call(1)
+    fake_sr.release_listen(1)
+    fake_sr.release_recognize(0)
+    assert _wait_until(lambda: events["results"])
+    assert events["results"][-1] == ("hello world", "cap2")
 
 
 def test_import_error_reports_install_hint(monkeypatch):

@@ -252,12 +252,14 @@ def main():
                 )
             except Exception as e:
                 log.error("Capture pipeline failed: %s", e)
-                session_manager.fail_if_active(capture_id, f"pipeline failed: {e}")
+                if session_manager.fail_if_active(capture_id, f"pipeline failed: {e}"):
+                    ui_bridge.post_for(capture_id, lambda: notch.set_status("Capture failed"))
                 return
 
             if pipeline.error:
                 log.error("Capture pipeline error: %s", pipeline.error)
-                session_manager.fail_if_active(capture_id, str(pipeline.error))
+                if session_manager.fail_if_active(capture_id, str(pipeline.error)):
+                    ui_bridge.post_for(capture_id, lambda: notch.set_status("Capture failed"))
                 return
 
             if not session_manager.is_active(capture_id):
@@ -284,11 +286,24 @@ def main():
 
         threading.Thread(target=_capture_task, daemon=True).start()
 
+        # Selection consumed: return the toggle to idle so the next hotkey
+        # press starts a fresh capture instead of being swallowed.
+        is_annotating = False
+        QTimer.singleShot(0, lambda: notch.set_recording(False))
+
     def _refresh_preview(capture_id):
         if not session_manager.is_active(capture_id):
             return
         notch.refresh_screenshots()
         notch.auto_expand_briefly()
+
+    def _report_sent():
+        notch.set_status("Sent to Agentation")
+        QTimer.singleShot(6000, _clear_sent_status)
+
+    def _clear_sent_status():
+        if notch.status_text == "Sent to Agentation":
+            notch.set_status("")
 
     def _send_to_agentation(record, capture_id):
         if not session_manager.is_active(capture_id):
@@ -315,6 +330,7 @@ def main():
 
             if session_manager.is_active(capture_id):
                 session_manager.transition_to(CaptureState.COMPLETED)
+                ui_bridge.post_for(capture_id, _report_sent)
         except Exception as e:
             log.error("Agentation sync failed: %s", e)
             if session_manager.fail_if_active(capture_id, f"agentation sync failed: {e}"):
