@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import ctypes
-import datetime
 import io
 import json
 import logging
@@ -19,10 +18,18 @@ from flask import Flask, jsonify, request, send_from_directory
 from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
+from arrow.core.config import get_config, port_available
+from arrow.server.screenshots import (
+    UploadError,
+    crop_box_for_monitors,
+    safe_join,
+    save_decoded_upload,
+)
 from arrow.server.security import (
     MAX_REQUEST_BYTES,
     Capability,
     CapabilityManager,
+    ShareTokenManager,
     TokenManager,
     is_localhost_origin,
     parse_bearer,
@@ -32,6 +39,29 @@ log = logging.getLogger("arrow.server")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
+
+
+def _package_version() -> str:
+    """Single version source: installed package metadata, then pyproject, then dev."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("arrow-annotate")
+        except PackageNotFoundError:
+            pass
+    except Exception:  # pragma: no cover - importlib always present
+        pass
+    try:
+        import tomllib
+
+        with open(os.path.join(ROOT_DIR, "pyproject.toml"), "rb") as fh:
+            return str(tomllib.load(fh)["project"]["version"])
+    except Exception:
+        return "0.1.0"
+
+
+APP_VERSION = _package_version()
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +225,12 @@ class OSController:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 app = Flask(__name__)
-app.config["AGENT_NAME"] = "bluely-agent"
+app.config["AGENT_NAME"] = "arrow-annotate"
 app.config["OS_CTRL"] = OSController()
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 app.config["TOKEN_MANAGER"] = TokenManager()
 app.config["CAPABILITIES"] = CapabilityManager()
+app.config["SHARE_TOKENS"] = ShareTokenManager(app.config["TOKEN_MANAGER"])
 
 
 def require_capability(capability: Capability):
@@ -235,17 +266,29 @@ def require_capability(capability: Capability):
 
 @app.route("/status", methods=["GET"])
 def status():
-    return jsonify({
+    """Liveness probe.
+
+    Unauthenticated callers get a minimal payload (no hostname, IP, platform or
+    Python version — those leak installation details). Presenting a valid
+    bearer token unlocks the full diagnostic view for the owner.
+    """
+    base = {
         "agent": app.config["AGENT_NAME"],
-        "version": "1.0.0",
-        "hostname": socket.gethostname(),
-        "ip": socket.gethostbyname(socket.gethostname()),
-        "platform": platform.platform(),
-        "python": platform.python_version(),
+        "version": APP_VERSION,
         "status": "healthy",
         "available": True,
-        "uptime": time.time() - app.config.get("start_time", time.time()),
-    })
+        "uptime": round(time.time() - app.config.get("start_time", time.time()), 3),
+    }
+    tokens: TokenManager = app.config["TOKEN_MANAGER"]
+    if tokens.verify(parse_bearer(request.headers.get("Authorization"))):
+        base.update({
+            "hostname": socket.gethostname(),
+            "ip": socket.gethostbyname(socket.gethostname()),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "capabilities": sorted(c.value for c in app.config["CAPABILITIES"].enabled_set()),
+        })
+    return jsonify(base)
 
 
 @app.route("/screenshot", methods=["GET"])
@@ -276,10 +319,41 @@ def screenshot():
 
 
 @app.route("/screenshots/<path:filename>")
-@require_capability(Capability.READ_SCREENSHOT)
 def serve_screenshot_file(filename):
-    """Serve captured screenshot files for Agentation MCP to reference."""
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    """Serve a captured screenshot file.
+
+    Access is granted either by the per-install bearer token (capability
+    ``read_screenshot``) **or** by a short-lived share token scoped to this
+    exact filename (``?t=`` / ``X-Arrow-Share``), which is how approved
+    consumers such as Agentation fetch an image without holding the master
+    token. Path traversal is rejected before any filesystem access.
+    """
+    tokens: TokenManager = app.config["TOKEN_MANAGER"]
+    shares: ShareTokenManager = app.config["SHARE_TOKENS"]
+
+    if not is_localhost_origin(request.headers.get("Origin")):
+        return jsonify({"error": "Origin not allowed"}), 403
+
+    share_token = shares.extract(request.args, request.headers)
+    authorized = shares.verify(share_token, filename) if share_token else False
+    if not authorized:
+        presented = parse_bearer(request.headers.get("Authorization"))
+        if not tokens.verify(presented):
+            return jsonify({"error": "Unauthorized"}), 401
+        caps: CapabilityManager = app.config["CAPABILITIES"]
+        if not caps.is_enabled(Capability.READ_SCREENSHOT):
+            return jsonify({
+                "error": f"Capability '{Capability.READ_SCREENSHOT.value}' is disabled",
+                "hint": "Opt in by setting ARROW_ENABLED_CAPABILITIES="
+                        f"{Capability.READ_SCREENSHOT.value} before starting the server.",
+            }), 403
+
+    try:
+        path = safe_join(SCREENSHOTS_DIR, filename)
+    except UploadError as e:
+        return jsonify({"error": str(e)}), e.status
+    if not os.path.isfile(path):
+        return jsonify({"error": "Screenshot not found"}), 404
     return send_from_directory(SCREENSHOTS_DIR, filename)
 
 
@@ -290,28 +364,21 @@ def save_screenshot():
 
     Accepts: { "image": "<base64_png>", "annotation": "<optional text>" }
     Returns: { "path": "...", "url": "...", "filename": "..." }
+
+    The payload is size-limited, base64-validated, image-sniffed, dimension
+    checked and written atomically under a collision-resistant name.
     """
     data = request.get_json(silent=True) or {}
-    image_b64 = data.get("image")
-    if not image_b64:
-        return jsonify({"error": "image (base64) required"}), 400
-
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"capture_{ts}.png"
-    path = os.path.join(SCREENSHOTS_DIR, filename)
-
     try:
-        image_data = base64.b64decode(image_b64)
-        with open(path, "wb") as f:
-            f.write(image_data)
-    except Exception as e:
-        return jsonify({"error": f"Failed to save image: {e}"}), 500
+        filename, path, fmt = save_decoded_upload(data.get("image"), SCREENSHOTS_DIR, "capture")
+    except UploadError as e:
+        return jsonify({"error": str(e)}), e.status
 
     return jsonify({
         "path": os.path.abspath(path),
         "filename": filename,
         "url": f"/screenshots/{filename}",
+        "format": fmt.lower(),
         "annotation": data.get("annotation", ""),
     })
 
@@ -511,20 +578,57 @@ class WebSocketBridge:
         self._pending: dict[str, Future] = {}
         self._ready = threading.Event()
         self._pending_lock = threading.Lock()
+        self._start_error: BaseException | None = None
+        self._stopping = False
 
     def start(self):
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="WSBridge")
         self._thread.start()
         self._ready.wait(timeout=3)
+        if self._start_error is not None:
+            raise RuntimeError(
+                f"WebSocket bridge could not start on {self.host}:{self.port}: {self._start_error}"
+            ) from self._start_error
 
     @property
     def connected(self):
         return self._ws is not None
 
+    def stop(self):
+        """Stop the bridge loop and wait briefly for the thread to exit."""
+        self._stopping = True
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+
+        async def _shutdown():
+            # Drop the live socket first so the handler exits promptly.
+            ws = self._ws
+            if ws is not None:
+                try:
+                    await ws.close(code=1001, reason="server shutting down")
+                except Exception:
+                    pass
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+            loop.stop()
+
+        try:
+            asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=3)
+        except Exception:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+
     def _run_loop(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._serve())
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._serve())
+        except BaseException as e:  # noqa: BLE001 - reported through start()
+            if not self._stopping:
+                self._start_error = e
+            self._ready.set()
 
     async def _serve(self):
         async with websockets.serve(self._handler, self.host, self.port):
@@ -698,31 +802,46 @@ def highlight_capture():
     if not rect_data:
         return jsonify({"error": "rect required"}), 400
 
-    x = rect_data.get("x", 0)
-    y = rect_data.get("y", 0)
-    w = rect_data.get("width") or rect_data.get("w", 0)
-    h = rect_data.get("height") or rect_data.get("h", 0)
-    if not w or not h:
+    try:
+        x = int(rect_data.get("x", 0))
+        y = int(rect_data.get("y", 0))
+        w = int(rect_data.get("width") or rect_data.get("w") or 0)
+        h = int(rect_data.get("height") or rect_data.get("h") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "rect values must be integers"}), 400
+    if w <= 0 or h <= 0:
         return jsonify({"error": "rect must have non-zero width/height"}), 400
 
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"highlight_{ts}.png"
-    path = os.path.join(SCREENSHOTS_DIR, filename)
+    rect = {"x": x, "y": y, "width": w, "height": h}
 
-    with mss.mss() as sct:
-        from arrow.capture.coordinate_mapper import ScreenInfo
-        screen = ScreenInfo(name="overlay", geometry=(int(x), int(y), int(w), int(h)), scale=1.0)
-        monitor = find_mss_monitor(sct, screen)
-        full = sct.grab(monitor)
-        pil_full = Image.frombytes("RGB", full.size, full.rgb)
-        cropped = pil_full.crop((int(x), int(y), int(x + w), int(y + h)))
-        cropped.save(path, "PNG")
+    try:
+        with mss.mss() as sct:
+            # MSS monitor 0 is the synthetic all-in-one virtual monitor; skip it
+            # so monitor_for_rect picks the *actual* display containing the rect.
+            monitors = list(sct.monitors[1:]) or list(sct.monitors)
+            monitor, box = crop_box_for_monitors(rect, monitors)
+            shot = sct.grab(monitor)
+            img = Image.frombytes("RGB", shot.size, shot.rgb)
+            cropped = img.crop(box)
+            buffer = io.BytesIO()
+            cropped.save(buffer, format="PNG")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        log.error("highlight capture failed: %s", e)
+        return jsonify({"error": "Screen capture failed"}), 500
+
+    from arrow.server.screenshots import save_image_bytes
+
+    try:
+        filename, path = save_image_bytes(buffer.getvalue(), SCREENSHOTS_DIR, "highlight")
+    except UploadError as e:
+        return jsonify({"error": str(e)}), e.status
 
     bridge = app.config.get("WS_BRIDGE")
     resolver = HighlightResolver(ws_bridge=bridge)
     resolution = resolver.resolve(
-        rect=(int(x), int(y), int(w), int(h)),
+        rect=(x, y, w, h),
         explicit_file_path=data.get("source_file_path"),
         selected_text=data.get("selected_text"),
     )
@@ -801,22 +920,31 @@ def highlight_execute():
 # ---------------------------------------------------------------------------
 
 class AgentServer:
-    """Wraps the Flask server and WebSocket bridge in background threads."""
+    """Wraps the Flask server and WebSocket bridge in background threads.
 
-    def __init__(self, host="127.0.0.1", port=5001, ws_host="127.0.0.1", ws_port=5002):
-        self.host = host
-        self.port = port
-        self.ws_host = ws_host
-        self.ws_port = ws_port
+    Defaults come from validated configuration (``arrow.core.config``); pass
+    explicit host/port values to override. ``start()`` fails fast with a clear
+    message when a port is unavailable, and ``stop()`` shuts both services down
+    through supported mechanisms instead of relying on daemon-thread death.
+    """
+
+    def __init__(self, host=None, port=None, ws_host=None, ws_port=None):
+        cfg = get_config()
+        self.host = cfg.http_host if host is None else host
+        self.port = cfg.http_port if port is None else port
+        self.ws_host = cfg.ws_host if ws_host is None else ws_host
+        self.ws_port = cfg.ws_port if ws_port is None else ws_port
         self._thread = None
         self._ws_bridge = None
         self._running = False
+        self._httpd = None
 
     def start(self):
         if self._running:
             return
-        self._running = True
+        self._check_ports()
         app.config["start_time"] = time.time()
+        self._running = True
 
         # Start WebSocket bridge
         self._ws_bridge = WebSocketBridge(
@@ -828,7 +956,11 @@ class AgentServer:
         app.config["WS_BRIDGE"] = self._ws_bridge
         log.info("[WSBridge] listening on ws://%s:%s", self.ws_host, self.ws_port)
 
-        # Start Flask
+        # Start Flask through werkzeug's server object so stop() can shut it
+        # down cleanly instead of abandoning a daemon thread.
+        from werkzeug.serving import make_server
+
+        self._httpd = make_server(self.host, self.port, app, threaded=True)
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -837,11 +969,55 @@ class AgentServer:
         self._thread.start()
         log.info("[AgentServer] listening on http://%s:%s", self.host, self.port)
 
+    def _check_ports(self):
+        """Fail fast with an actionable message when a port is taken."""
+        problems = []
+        if not port_available(self.host, self.port):
+            problems.append(
+                f"HTTP port {self.port} on {self.host} is already in use. "
+                f"Free the port or start with ARROW_HTTP_PORT=<other>."
+            )
+        if not port_available(self.ws_host, self.ws_port):
+            problems.append(
+                f"WebSocket port {self.ws_port} on {self.ws_host} is already in use. "
+                f"Free the port or start with ARROW_WS_PORT=<other>."
+            )
+        if problems:
+            raise RuntimeError("Cannot start Arrow Annotate — " + " ".join(problems))
+
     def _run(self):
-        app.run(host=self.host, port=self.port, threaded=True, debug=False, use_reloader=False)
+        assert self._httpd is not None
+        try:
+            self._httpd.serve_forever(poll_interval=0.2)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("HTTP server exited unexpectedly")
 
     def stop(self):
+        """Stop HTTP and WebSocket services and wait for their threads."""
+        if not self._running:
+            return
         self._running = False
+
+        httpd = self._httpd
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+            except Exception:  # pragma: no cover - defensive
+                log.exception("Failed to shut down HTTP server")
+            self._httpd = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+        bridge = self._ws_bridge
+        if bridge is not None:
+            try:
+                bridge.stop()
+            except Exception:  # pragma: no cover - defensive
+                log.exception("Failed to stop WebSocket bridge")
+            self._ws_bridge = None
+            app.config.pop("WS_BRIDGE", None)
+        log.info("[AgentServer] stopped")
 
     @property
     def base_url(self):

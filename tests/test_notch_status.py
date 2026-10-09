@@ -130,3 +130,62 @@ def test_format_change_request_empty():
 
     assert format_change_request({}) == ""
     assert format_change_request(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Notch status methods (G11): set_status/update_status must drive a real
+# visible status model instead of being `pass` no-ops.
+# ---------------------------------------------------------------------------
+
+_APP = None
+
+
+def _qapp():
+    # NOTE: the QApplication must stay referenced for the whole session —
+    # if it is garbage-collected Qt destroys it and widget construction
+    # hard-crashes the interpreter.
+    global _APP
+    from PyQt6.QtWidgets import QApplication
+
+    _APP = QApplication.instance() or QApplication([])
+    return _APP
+
+
+def test_set_status_updates_visible_status_label():
+    _qapp()
+    from arrow.ui.notch import DynamicNotch
+
+    notch = DynamicNotch()
+    try:
+        assert isinstance(notch.status_text, str)
+
+        notch.set_status("Capturing…")
+        assert notch.status_text == "Capturing…"
+        assert notch._status_label.text() == "Capturing…"
+
+        notch.update_status("Ready")
+        assert notch.status_text == "Ready"
+        assert notch._status_label.text() == "Ready"
+
+        notch.set_status("")
+        assert notch._status_label.text() == ""
+    finally:
+        notch.close()
+
+
+def test_status_label_is_attached_to_the_notch_layout():
+    _qapp()
+    from arrow.ui.notch import DynamicNotch
+
+    notch = DynamicNotch()
+    try:
+        # The label must be part of the widget tree (reachable from the
+        # top-level layout), not a detached attribute.
+        from PyQt6.QtWidgets import QLabel
+
+        assert isinstance(notch._status_label, QLabel)
+        parent = notch._status_label.parentWidget()
+        assert parent is not None
+    finally:
+        notch.close()
+

@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import QApplication, QWidget
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
 DEST_RGB = (34, 197, 94)         # Green
-ACTIVE_RGB = (59, 130, 246)      # Neon Blue
+ACTIVE_RGB = (244, 114, 182)      # Rose Pink Neon
 SOURCE_CORE = (255, 214, 214)
 DEST_CORE = (214, 255, 228)
-ACTIVE_CORE = (219, 234, 254)    # Light Blue
+ACTIVE_CORE = (255, 245, 248)    # Pure White-Pink Core
 
 MARKER_LABELS = {"source": "Current", "destination": "Move here"}
 
@@ -149,6 +149,7 @@ class SelectionOverlay(QWidget):
         self._current_stroke = None
         self._is_drawing = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setCursor(Qt.CursorShape.CrossCursor)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -158,6 +159,7 @@ class SelectionOverlay(QWidget):
         """Called when hotkey is released; emits the completed selection."""
         self._active = False
         self._is_drawing = False
+        self.unsetCursor()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         def _mock(result):
@@ -238,18 +240,8 @@ class SelectionOverlay(QWidget):
     # ------------------------------------------------------------------
 
     def _update_fade(self):
-        now = time.time()
-        changed = False
-
-        if self._current_stroke is not None:
-            orig_len = len(self._current_stroke.points)
-            self._current_stroke.points = [
-                p for p in self._current_stroke.points if now - p.timestamp < self.TRAIL_SECONDS
-            ]
-            changed = len(self._current_stroke.points) != orig_len or bool(self._current_stroke.points)
-
         has_live = self._current_stroke is not None and bool(self._current_stroke.points)
-        if changed or self._strokes or has_live:
+        if self._strokes or has_live or self._is_drawing or self._active:
             self.update()
         elif not self._active and not self._strokes:
             self.hide()
@@ -317,7 +309,16 @@ class SelectionOverlay(QWidget):
         which keeps the frame cost low even for long strokes. Locked strokes
         (uniform alpha ~1) land in a single full-opacity bucket.
         """
-        if len(trail) < 2:
+        if not trail:
+            return
+
+        if len(trail) == 1:
+            pt, a = trail[0]
+            r, g, b = rgb
+            cr, cg, cb = core_rgb
+            painter.setBrush(QColor(cr, cg, cb, int(255 * a)))
+            painter.setPen(QPen(QColor(r, g, b, int(180 * a)), 4))
+            painter.drawEllipse(pt, 6, 6)
             return
 
         r, g, b = rgb
@@ -340,13 +341,13 @@ class SelectionOverlay(QWidget):
             if not started:
                 continue
 
-            outer = QPen(QColor(r, g, b, int(25 * bucket_alpha)), 16,
+            outer = QPen(QColor(r, g, b, int(45 * bucket_alpha)), 22,
                          Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                          Qt.PenJoinStyle.RoundJoin)
-            inner = QPen(QColor(r, g, b, int(80 * bucket_alpha)), 8,
+            inner = QPen(QColor(r, g, b, int(120 * bucket_alpha)), 11,
                          Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                          Qt.PenJoinStyle.RoundJoin)
-            core = QPen(QColor(cr, cg, cb, int(255 * bucket_alpha)), 3,
+            core = QPen(QColor(cr, cg, cb, int(255 * bucket_alpha)), 5,
                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                         Qt.PenJoinStyle.RoundJoin)
 
@@ -357,44 +358,60 @@ class SelectionOverlay(QWidget):
             painter.setPen(core)
             painter.drawPath(path)
 
+    def _draw_particles(self, painter: QPainter, trail: List[Tuple[QPointF, float]], rgb: Tuple[int, int, int]):
+        """Draw subtle glowing sparkles along the fading comet tail as shown in the gesture UI."""
+        r, g, b = rgb
+        for i, (pt, a) in enumerate(trail):
+            if a < 0.05 or i % 2 != 0:
+                continue
+            ox = (math.sin(i * 12.9898 + pt.x()) * 16.0)
+            oy = (math.cos(i * 78.233 + pt.y()) * 16.0)
+            sz = 1.2 + (math.sin(i * 1.5) + 1.0) * 1.0
+            particle_pt = QPointF(pt.x() + ox, pt.y() + oy)
+            alpha = int(160 * a * (0.3 + 0.7 * math.sin(i * 2.5)))
+            if alpha <= 0:
+                continue
+            painter.setBrush(QColor(r, g, b, alpha))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(particle_pt, sz, sz)
+
     def _draw_pointer_head(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
                            rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
-        """Draw an arrowhead at the tip of the live trail."""
-        if len(trail) < 5:
+        """Draw a crisp white arrowhead at the tip of the live trail."""
+        if len(trail) < 3:
             return
 
-        # Use a point slightly further back to calculate a stable angle
-        p1, a1 = trail[-5]
+        p1, a1 = trail[max(0, len(trail) - 4)]
         p2, a2 = trail[-1]
         
-        # Don't draw if fully faded
         if a2 <= 0.05:
             return
 
-        # Calculate angle
         angle = math.atan2(p2.y() - p1.y(), p2.x() - p1.x())
 
         arrow_len = 22.0
-        arrow_angle = math.pi / 7
+        arrow_angle = math.pi / 6.5
 
-        # Points of the arrowhead
-        tip = QPointF(p2.x() + 4 * math.cos(angle), p2.y() + 4 * math.sin(angle))
+        tip = QPointF(p2.x() + 5 * math.cos(angle), p2.y() + 5 * math.sin(angle))
         left = QPointF(tip.x() - arrow_len * math.cos(angle - arrow_angle),
                        tip.y() - arrow_len * math.sin(angle - arrow_angle))
         right = QPointF(tip.x() - arrow_len * math.cos(angle + arrow_angle),
                         tip.y() - arrow_len * math.sin(angle + arrow_angle))
+        notch = QPointF(tip.x() - arrow_len * 0.65 * math.cos(angle),
+                        tip.y() - arrow_len * 0.65 * math.sin(angle))
         
-        # Draw outer glow
         r, g, b = rgb
-        painter.setBrush(QColor(r, g, b, int(180 * a2)))
-        painter.setPen(QPen(QColor(r, g, b, int(80 * a2)), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPolygon([tip, left, right])
-
-        # Draw inner core
         cr, cg, cb = core_rgb
-        painter.setBrush(QColor(cr, cg, cb, int(255 * a2)))
-        painter.setPen(QPen(QColor(cr, cg, cb, int(255 * a2)), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPolygon([tip, left, right])
+
+        # Glow layer
+        painter.setBrush(QColor(r, g, b, int(200 * a2)))
+        painter.setPen(QPen(QColor(r, g, b, int(100 * a2)), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPolygon([tip, left, notch, right])
+
+        # Core pure white arrowhead
+        painter.setBrush(QColor(255, 255, 255, int(255 * a2)))
+        painter.setPen(QPen(QColor(cr, cg, cb, int(255 * a2)), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPolygon([tip, left, notch, right])
 
     # ------------------------------------------------------------------
     # Markers + arrow
@@ -456,6 +473,12 @@ class SelectionOverlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPolygon([end, p1, p2])
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide_overlay()
+        else:
+            super().keyPressEvent(event)
+
     # ------------------------------------------------------------------
     # Painting
     # ------------------------------------------------------------------
@@ -464,12 +487,38 @@ class SelectionOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Draw a nearly transparent background to intercept mouse events on Windows
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        # Draw translucent dark backdrop
+        painter.fillRect(self.rect(), QColor(15, 17, 23, 215))
+
+        # Render subtle dot-grid background pattern matching the gesture screenshot
+        grid_step = 28
+        painter.setPen(QPen(QColor(255, 255, 255, 18), 1.5))
+        for x in range(14, self.rect().width(), grid_step):
+            for y in range(14, self.rect().height(), grid_step):
+                painter.drawPoint(x, y)
+
+        # Render floating guide pill at top center
+        banner_w, banner_h = 460, 34
+        bx = int((self.rect().width() - banner_w) / 2)
+        by = 20
+        painter.setBrush(QColor(15, 23, 42, 230))
+        painter.setPen(QPen(QColor(244, 114, 182, 180), 1.5))
+        painter.drawRoundedRect(bx, by, banner_w, banner_h, 17, 17)
+
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(241, 245, 249), 1))
+        painter.drawText(
+            bx, by, banner_w, banner_h,
+            Qt.AlignmentFlag.AlignCenter,
+            "Draw: 1 Current  ->  2 Destination   |   Press ESC when done"
+        )
         
         now = time.time()
 
-        locked = [s for s in self._strokes if s.locked and len(s.points) >= 2]
+        locked = [s for s in self._strokes if s.locked and len(s.points) >= 1]
 
         # Persistent annotation scene: both strokes at full opacity.
         for s in locked:
@@ -489,10 +538,11 @@ class SelectionOverlay(QWidget):
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
 
-        # Live stroke: fading comet tail.
-        if self._current_stroke is not None and len(self._current_stroke.points) >= 2:
+        # Live stroke: fading comet tail with particle sparkles & white arrowhead.
+        if self._current_stroke is not None and len(self._current_stroke.points) >= 1:
             trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
             self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
+            self._draw_particles(painter, trail, ACTIVE_RGB)
             self._draw_pointer_head(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
 
         painter.end()

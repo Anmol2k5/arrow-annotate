@@ -77,7 +77,7 @@ class ScreenshotService:
         if long <= max_edge:
             return img
         ratio = max_edge / long
-        return img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        return img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
 
     def capture_headless(self, region: Optional[Dict[str, int]] = None) -> Image.Image:
         """Capture the screen without touching any overlay widget.

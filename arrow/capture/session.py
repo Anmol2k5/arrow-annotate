@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -107,38 +108,61 @@ class SessionManager:
 
     def __init__(self) -> None:
         self._active_session: Optional[CaptureSession] = None
+        # Sessions are mutated from the Qt main thread and from capture /
+        # provider worker threads; every read-modify-write goes through this.
+        self._lock = threading.RLock()
 
     @property
     def active_session(self) -> Optional[CaptureSession]:
-        return self._active_session
+        with self._lock:
+            return self._active_session
+
+    def is_active(self, capture_id: Optional[str]) -> bool:
+        """True when capture_id still names the active session."""
+        if not capture_id:
+            return False
+        with self._lock:
+            return (
+                self._active_session is not None
+                and self._active_session.capture_id == capture_id
+            )
 
     def start_session(self, project_id: Optional[str] = None) -> CaptureSession:
         """Initializes and returns a new active capture session."""
-        if self._active_session and self._active_session.state not in self.FINAL_STATES and self._active_session.state != CaptureState.IDLE:
-            logger.warning(
-                "Starting a new session while an active one (%s) is in progress. Cancelling old session.",
-                self._active_session.capture_id
-            )
-            self.transition_to(CaptureState.CANCELLED)
+        with self._lock:
+            if (
+                self._active_session
+                and self._active_session.state not in self.FINAL_STATES
+                and self._active_session.state != CaptureState.IDLE
+            ):
+                logger.warning(
+                    "Starting a new session while an active one (%s) is in progress. Cancelling old session.",
+                    self._active_session.capture_id
+                )
+                self._transition_locked(CaptureState.CANCELLED)
 
-        session = CaptureSession(project_id=project_id, state=CaptureState.IDLE)
-        self._active_session = session
-        self.transition_to(CaptureState.STARTING)
-        return session
+            session = CaptureSession(project_id=project_id, state=CaptureState.IDLE)
+            self._active_session = session
+            self._transition_locked(CaptureState.STARTING)
+            return session
 
     def transition_to(self, target_state: CaptureState) -> None:
         """Validates and applies a state transition to the active session."""
+        with self._lock:
+            self._transition_locked(target_state)
+
+    def _transition_locked(self, target_state: CaptureState) -> None:
         if not self._active_session:
             raise ValueError("No active session exists to transition.")
 
         current = self._active_session.state
-        
+
         # If target state is the same as current state, ignore (no-op)
         if current == target_state:
             return
 
         allowed = self.ALLOWED_TRANSITIONS.get(current, set())
-        
+
         # Explicitly allow transitioning to FAILED or CANCELLED from non-final states
         is_abort = target_state in {CaptureState.FAILED, CaptureState.CANCELLED}
         is_current_active = current not in self.FINAL_STATES and current != CaptureState.IDLE
@@ -157,6 +181,26 @@ class SessionManager:
         self._active_session.state = target_state
         self._active_session.update_timestamp()
 
+    def fail_if_active(self, capture_id: Optional[str], reason: str) -> bool:
+        """Mark the session FAILED if capture_id is still current.
+
+        Used by error boundaries (e.g. screenshot failures) so an exception can
+        never leave the session wedged in an intermediate state. Returns True
+        when the failure was applied.
+        """
+        with self._lock:
+            if not self.is_active(capture_id):
+                return False
+            assert self._active_session is not None
+            self._active_session.error = reason
+            try:
+                self._transition_locked(CaptureState.FAILED)
+            except ValueError:
+                # Already terminal — keep the recorded reason.
+                logger.debug("fail_if_active: session already terminal")
+            return True
+
     def clear_session(self) -> None:
         """Clears the active session references."""
-        self._active_session = None
+        with self._lock:
+            self._active_session = None

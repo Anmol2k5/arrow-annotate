@@ -1021,6 +1021,7 @@ class DynamicNotch(QWidget):
         self._idle_rect = QRect()
         self._expanded_rect = QRect()
         self._is_recording = False
+        self._status_text = ""
 
         self._setup_window()
         self._build_ui()
@@ -1122,6 +1123,17 @@ class DynamicNotch(QWidget):
 
         self._expanded_w.hide()
         cl.addWidget(self._expanded_w, 1)
+
+        # ---- Status line (set via set_status/update_status) ----
+        self._status_label = QLabel("", self._container)
+        self._status_label.setObjectName("notchStatus")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setWordWrap(False)
+        self._status_label.setStyleSheet(
+            "QLabel#notchStatus { color: #94a3b8; font-size: 11px; padding: 4px 8px 6px 8px; }"
+        )
+        self._status_label.hide()
+        cl.addWidget(self._status_label)
 
         self._main_layout.addWidget(self._container)
 
@@ -1265,7 +1277,15 @@ class DynamicNotch(QWidget):
         self._auto_collapse_timer = None
 
     def set_status(self, text):
-        pass
+        """Show a transient status line in the notch (empty text hides it)."""
+        text = "" if text is None else str(text)
+        self._status_text = text
+        self._status_label.setText(text)
+        self._status_label.setVisible(bool(text))
 
     def update_status(self, text):
-        pass
+        self.set_status(text)
+
+    @property
+    def status_text(self):
+        return self._status_text

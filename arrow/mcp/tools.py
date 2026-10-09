@@ -288,6 +288,7 @@ class ArrowTools:
     def _look(self, args: dict) -> Any:
         import base64
         from io import BytesIO
+
         from arrow.capture.screenshot_service import ScreenshotService
         svc = ScreenshotService()
         region = args.get("region")
@@ -305,6 +306,7 @@ class ArrowTools:
 
     def _context_md(self, args: dict) -> Any:
         import os
+
         from arrow.capture.context_file import LATEST_DIR
         path = os.path.join(LATEST_DIR, "context.md")
         if not os.path.isfile(path):

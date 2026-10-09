@@ -19,11 +19,14 @@ setting ``ARROW_ENABLED_CAPABILITIES`` (comma-separated capability names, e.g.
 
 from __future__ import annotations
 
+import base64
 import hmac
+import json
 import logging
 import os
 import secrets
 import threading
+import time
 from enum import Enum
 from typing import Iterable, Optional
 
@@ -31,6 +34,10 @@ log = logging.getLogger("arrow.server.security")
 
 MAX_REQUEST_BYTES = 8 * 1024 * 1024  # 8 MiB
 LOCALHOST_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# Share tokens are short-lived by design: long enough for a consumer to fetch
+# an image, short enough that a leaked URL stops working quickly.
+DEFAULT_SHARE_TTL_SECONDS = 15 * 60
 
 
 def _config_dir() -> str:
@@ -128,6 +135,118 @@ def parse_bearer(header_value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def is_safe_filename(filename: str) -> bool:
+    """Reject path traversal, separators and other unsafe upload names."""
+    if not filename or not isinstance(filename, str):
+        return False
+    if len(filename) > 255:
+        return False
+    if filename in {".", ".."}:
+        return False
+    if "/" in filename or "\\" in filename or "\x00" in filename:
+        return False
+    # No absolute paths or Windows drive letters.
+    if filename[0] in "/\\" or (len(filename) > 1 and filename[1] == ":"):
+        return False
+    return True
+
+
+class ShareTokenManagerMintError(Exception):
+    """Raised when a share token cannot be minted."""
+
+
+class ShareTokenManager:
+    """Mints and verifies short-lived, single-file scoped access tokens.
+
+    A share token authorizes exactly one screenshot filename for a bounded
+    time. It lets an approved consumer (Agentation, a copied link) fetch a
+    shared capture without holding the long-lived per-install bearer token.
+
+    Format: ``<payload-b64url>.<hmac-b64url>`` where the payload is
+    ``{"f": filename, "n": nonce, "e": expiry_epoch}`` and the MAC is derived
+    from the per-install bearer token so the share key never leaves the host.
+    """
+
+    def __init__(self, token_manager: "TokenManager", ttl_seconds: int = DEFAULT_SHARE_TTL_SECONDS,
+                 clock=time.time):
+        self._token_manager = token_manager
+        self._ttl = max(1, int(ttl_seconds))
+        self._clock = clock
+
+    def _signing_key(self) -> bytes:
+        return ("arrow-share:" + self._token_manager.get_or_create()).encode("utf-8")
+
+    def mint(self, filename: str, ttl_seconds: Optional[int] = None) -> str:
+        if not is_safe_filename(filename):
+            raise ShareTokenManagerMintError(f"Refusing to share unsafe filename: {filename!r}")
+        ttl = self._ttl if ttl_seconds is None else max(1, int(ttl_seconds))
+        payload = {
+            "f": filename,
+            "n": secrets.token_urlsafe(8),
+            "e": int(self._clock()) + ttl,
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = _b64url_encode(raw)
+        mac = hmac.new(self._signing_key(), body.encode("ascii"), "sha256").digest()
+        return f"{body}.{_b64url_encode(mac)}"
+
+    def verify(self, token: Optional[str], filename: str) -> bool:
+        """True only when the token is well-formed, unexpired and scoped to *filename*."""
+        if not token or not isinstance(token, str) or "." not in token:
+            return False
+        body, _, mac_part = token.partition(".")
+        if not body or not mac_part:
+            return False
+        try:
+            expected = hmac.new(self._signing_key(), body.encode("ascii"), "sha256").digest()
+            presented = _b64url_decode(mac_part)
+        except (ValueError, TypeError):
+            return False
+        if not hmac.compare_digest(expected, presented):
+            return False
+        try:
+            payload = json.loads(_b64url_decode(body))
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("f") != filename:
+            return False
+        expiry = payload.get("e")
+        if not isinstance(expiry, int) or expiry < int(self._clock()):
+            return False
+        return True
+
+    def share_url(self, base_url: str, filename: str, ttl_seconds: Optional[int] = None) -> str:
+        token = self.mint(filename, ttl_seconds=ttl_seconds)
+        return f"{base_url}/screenshots/{filename}?t={token}"
+
+    def extract(self, args, headers) -> Optional[str]:
+        """Pull a share token from the query string or ``X-Arrow-Share`` header."""
+        token = None
+        try:
+            token = args.get("t")
+        except Exception:  # pragma: no cover - defensive
+            token = None
+        if not token:
+            try:
+                token = headers.get("X-Arrow-Share")
+            except Exception:  # pragma: no cover - defensive
+                token = None
+        if isinstance(token, (list, tuple)):
+            token = token[0] if token else None
+        return token or None
+
+
 def is_localhost_origin(origin: Optional[str]) -> bool:
     """Validate that an Origin header (if present) is localhost.
 
@@ -179,11 +298,15 @@ class CapabilityManager:
 __all__ = [
     "MAX_REQUEST_BYTES",
     "LOCALHOST_HOSTS",
+    "DEFAULT_SHARE_TTL_SECONDS",
     "Capability",
     "DEFAULT_ENABLED",
     "SENSITIVE_CAPABILITIES",
     "TokenManager",
     "CapabilityManager",
+    "ShareTokenManager",
+    "ShareTokenManagerMintError",
+    "is_safe_filename",
     "parse_bearer",
     "is_localhost_origin",
 ]

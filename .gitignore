@@ -16,5 +16,14 @@ graphify-out/
 crash.log
 *.log
 
-# Environment
+# Environment / secrets — never commit real credentials
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets.json
+token
+**/token
+arrow.db

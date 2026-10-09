@@ -5,12 +5,13 @@ import signal
 import sys
 import threading
 
-from PyQt6.QtCore import QMetaObject, Qt, QTimer
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
 from arrow.context.orchestrator import ContextOrchestrator
+from arrow.core.threads import UiBridge
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
@@ -48,12 +49,31 @@ def _get_foreground_title():
 
 
 def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName("Bluely Agent")
+    # -- Load and validate configuration before anything binds a port --
+    try:
+        from arrow.core.config import ConfigError, get_config
 
-    # -- Start Flask server in background daemon thread --
-    server = AgentServer(host="127.0.0.1", port=5001)
-    server.start()
+        cfg = get_config(refresh=True)
+    except ConfigError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    from arrow.core.logging import setup_logging
+
+    setup_logging(cfg.log_level)
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Arrow Annotate")
+    app.setOrganizationName("Arrow Annotate")
+
+    # -- Start local HTTP + WebSocket services in background threads --
+    server = AgentServer()
+    try:
+        server.start()
+    except RuntimeError as e:
+        log.error("%s", e)
+        QMessageBox.critical(None, "Arrow Annotate", str(e))
+        sys.exit(3)
 
     # -- Build and show the DynamicNotch overlay --
     notch = DynamicNotch(server=server)
@@ -76,11 +96,21 @@ def main():
     # -- Setup Session Manager --
     session_manager = SessionManager()
 
+    # -- Bridge for worker threads to touch the UI on the main thread --
+    ui_bridge = UiBridge()
+
+    import time
     current_voice_text = ""
     is_annotating = False
+    last_toggle_time = 0.0
 
     def toggle_annotation():
-        nonlocal is_annotating, current_voice_text
+        nonlocal is_annotating, current_voice_text, last_toggle_time
+        now = time.time()
+        if now - last_toggle_time < 0.3:
+            return  # Prevent rapid duplicate hotkey triggers
+        last_toggle_time = now
+
         if not is_annotating:
             is_annotating = True
             current_voice_text = ""
@@ -88,6 +118,7 @@ def main():
             # Start new capture session
             session = session_manager.start_session()
             capture_id = session.capture_id
+            ui_bridge.begin_capture(capture_id)
             
             # Transition to ANNOTATING
             session_manager.transition_to(CaptureState.ANNOTATING)
@@ -133,7 +164,7 @@ def main():
 
     def on_selection(result):
         """Full capture flow when overlay selection completes."""
-        nonlocal current_voice_text
+        nonlocal current_voice_text, is_annotating
 
         session = session_manager.active_session
         if not session:
@@ -152,9 +183,20 @@ def main():
         cursor_x, cursor_y = _get_cursor_position()
         window_title = _get_foreground_title()
 
-        # Capture raw screenshot on main thread (with overlay auto-hiding)
+        # Capture raw screenshot on main thread (with overlay auto-hiding).
+        # Error boundary: a failed screenshot must FAIL the session, not
+        # wedge it in COLLECTING_CONTEXT or crash the Qt slot.
         screenshot_service = ScreenshotService()
-        raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
+        try:
+            raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
+        except Exception as e:
+            log.error("Screenshot capture failed: %s", e)
+            session_manager.fail_if_active(capture_id, f"screenshot failed: {e}")
+            is_annotating = False
+            ui_bridge.post_for(capture_id, lambda: notch.set_status("Screenshot failed"))
+            QTimer.singleShot(0, voice.stop_listening)
+            QTimer.singleShot(0, lambda: notch.set_recording(False))
+            return
 
         # Create annotations from the overlay result (source + optional destination)
         data = result.to_dict()
@@ -186,7 +228,7 @@ def main():
         session.annotations = annotations
 
         def _capture_task():
-            if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
+            if not session_manager.is_active(capture_id):
                 return
 
             try:
@@ -210,21 +252,15 @@ def main():
                 )
             except Exception as e:
                 log.error("Capture pipeline failed: %s", e)
-                try:
-                    session_manager.transition_to(CaptureState.FAILED)
-                except ValueError:
-                    pass
+                session_manager.fail_if_active(capture_id, f"pipeline failed: {e}")
                 return
 
             if pipeline.error:
                 log.error("Capture pipeline error: %s", pipeline.error)
-                try:
-                    session_manager.transition_to(CaptureState.FAILED)
-                except ValueError:
-                    pass
+                session_manager.fail_if_active(capture_id, str(pipeline.error))
                 return
 
-            if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
+            if not session_manager.is_active(capture_id):
                 return
 
             try:
@@ -233,9 +269,9 @@ def main():
             except ValueError:
                 return
 
-            # Update notch on main thread
-            QTimer.singleShot(0, notch.refresh_screenshots)
-            QTimer.singleShot(0, notch.auto_expand_briefly)
+            # Update notch on the main thread; callbacks for captures that
+            # have since been superseded are dropped by the bridge.
+            ui_bridge.post_for(capture_id, lambda: _refresh_preview(capture_id))
 
             try:
                 session_manager.transition_to(CaptureState.SENDING)
@@ -248,50 +284,54 @@ def main():
 
         threading.Thread(target=_capture_task, daemon=True).start()
 
+    def _refresh_preview(capture_id):
+        if not session_manager.is_active(capture_id):
+            return
+        notch.refresh_screenshots()
+        notch.auto_expand_briefly()
+
     def _send_to_agentation(record, capture_id):
-        if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
+        if not session_manager.is_active(capture_id):
             return
 
         try:
             session_manager.transition_to(CaptureState.RUNNING)
-            from arrow.providers.agentation import AgentationClient
+            from arrow.providers.agentation import AgentationClient, send_capture_annotation
             client = AgentationClient()
-            sessions = client.list_sessions()
-            if sessions:
-                session_id = sessions[0]["id"]
-            else:
-                s = client.create_session("bluely://desktop")
-                session_id = s["id"]
 
             filename = os.path.basename(record.screenshot_path)
-            image_url = f"{server.base_url}/screenshots/{filename}"
+            # Hand Agentation a short-lived, single-file scoped URL instead of
+            # the master bearer token: it can fetch exactly this one image and
+            # only for a limited time.
+            from arrow.server.server import app as flask_app
+
+            shares = flask_app.config["SHARE_TOKENS"]
+            image_url = shares.share_url(server.base_url, filename)
             
-            if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
+            if not session_manager.is_active(capture_id):
                 return
 
-            client.add_annotation(session_id, {
-                "comment": record.annotation_text or "Visual highlight",
-                "element": "desktop_screen",
-                "elementPath": "desktop",
-                "imagePath": image_url
-            })
-            
-            if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
+            send_capture_annotation(client, record, image_url)
+
+            if session_manager.is_active(capture_id):
                 session_manager.transition_to(CaptureState.COMPLETED)
         except Exception as e:
             log.error("Agentation sync failed: %s", e)
-            if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
-                try:
-                    session_manager.transition_to(CaptureState.FAILED)
-                except ValueError:
-                    pass
+            if session_manager.fail_if_active(capture_id, f"agentation sync failed: {e}"):
+                ui_bridge.post_for(capture_id, lambda: notch.set_status("Agentation sync failed"))
 
     overlay.selection_complete.connect(on_selection)
 
-    # Optional global hotkey
+    # -- Signal bridge to safely handle global hotkey from background listener thread --
+    class HotkeyBridge(QObject):
+        triggered = pyqtSignal()
+
+    hotkey_bridge = HotkeyBridge()
+    hotkey_bridge.triggered.connect(toggle_annotation)
+
     try:
         import keyboard
-        keyboard.add_hotkey("ctrl+shift+space", toggle_annotation)
+        keyboard.add_hotkey("ctrl+shift+space", hotkey_bridge.triggered.emit)
     except Exception as e:
         log.warning("Could not register global hotkey: %s", e)
 
@@ -310,6 +350,29 @@ def main():
     poll_timer.timeout.connect(poll_server)
     poll_timer.start(5000)
     poll_server()
+
+    # -- Graceful shutdown: release hotkey, timers, mic and local server --
+    def _cleanup():
+        log.info("Shutting down Arrow Annotate")
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+        except Exception as e:
+            log.debug("Hotkey cleanup failed: %s", e)
+        try:
+            poll_timer.stop()
+        except Exception:
+            pass
+        try:
+            voice.stop_listening()
+        except Exception:
+            pass
+        try:
+            server.stop()
+        except Exception as e:
+            log.debug("Server stop failed: %s", e)
+
+    app.aboutToQuit.connect(_cleanup)
 
     # -- Graceful shutdown on SIGINT --
     signal.signal(signal.SIGINT, signal.SIG_DFL)
