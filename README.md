@@ -5,7 +5,7 @@ screenshot of any screen region, add a voice or typed instruction, and hand
 the result to a coding agent (Agentation, or the built-in Codex/Claude
 providers) with the exact coordinates, window, and context it needs.
 
-Everything runs on your machine. The only network traffic is:
+Screenshots and metadata are stored locally. Voice transcription can use Google's speech-recognition service when enabled; other network traffic may include:
 
 - the optional local Agentation bridge (`http://127.0.0.1:4747` by default),
 - short-lived, single-image share links minted for approved consumers,
@@ -41,13 +41,22 @@ loopback binding). Non-loopback hosts are rejected unless
 
 ## Usage
 
-- Press the annotation hotkey (default `Ctrl+Shift+A`) to capture a region.
-- Drag to select an area; the overlay opens for arrows, highlights, and text.
-- Hold the push-to-talk key to add a voice instruction, or type one in the
-  preview panel.
-- Approve the preview to send the capture to your agent. The notch widget
-  shows status through the whole flow (capturing → processing → sending →
-  done/failed).
+- Hover over the top-center notch, select a project with the folder icon,
+  and click **Capture** (or press **Ctrl+Shift+Space**).
+- Draw a source region; draw a second stroke for an optional destination.
+  A blue gesture trail follows the pointer and fades over about 3 seconds,
+  while the red/green source/destination marks remain until you finish.
+- Press **Ctrl+Shift+Space** again or **Esc** to finish. Note that Esc
+  currently completes the capture, rather than cancelling it.
+- Voice recognition starts during capture when available; it uses Google
+  speech recognition by default, which requires a network connection.
+  Unrecognized speech no longer ends the capture. You can instead edit
+  the instruction on the resulting screenshot card.
+- The notch shows captured images. **Edit** or **Copy** a compiled request,
+  or select **Codex**/**Claude Code** when the matching local CLI is installed.
+  The app currently also attempts to hand completed captures to Agentation
+  at `http://127.0.0.1:4747`; that optional integration may report offline
+  while local screenshots remain available.
 
 The companion browser extension lets you annotate live web pages the same
 way; captures flow through the same local pipeline.
