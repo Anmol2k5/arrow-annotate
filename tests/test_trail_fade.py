@@ -115,4 +115,4 @@ def test_focus_outline_paints_color_on_selected_region():
     overlay._draw_focus_outline(painter, stroke, now)
     painter.end()
 
-    assert image.pixelColor(15, 15).alpha() > 0
+    assert image.pixelColor(27, 15).alpha() > 0
