@@ -102,7 +102,7 @@ class SelectionOverlay(QWidget):
 
         self._fade_timer = QTimer(self)
         self._fade_timer.timeout.connect(self._update_fade)
-        self._fade_timer.start(16)  # ~60fps
+        self._fade_timer.setInterval(16)  # ~60fps, only while overlay is open
 
         self._offset = QPointF(0, 0)
 
@@ -149,6 +149,7 @@ class SelectionOverlay(QWidget):
         self._is_drawing = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setCursor(Qt.CursorShape.CrossCursor)
+        self._fade_timer.start()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -160,6 +161,7 @@ class SelectionOverlay(QWidget):
         self._is_drawing = False
         self.unsetCursor()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._fade_timer.stop()
         self.hide()  # Remove the drawing surface before the raw screenshot.
 
         def _mock(result):
