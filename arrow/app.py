@@ -91,7 +91,7 @@ def main():
 
     # -- Setup Highlight Overlay & Voice Input --
     overlay = SelectionOverlay()
-    voice = VoiceInput()
+    voice = VoiceInput(enabled=cfg.voice_transcription != "off")
 
     # -- Setup Session Manager --
     session_manager = SessionManager()
@@ -125,17 +125,47 @@ def main():
 
             QTimer.singleShot(0, overlay.show_overlay)
             # Pass capture_id to voice input
-            QTimer.singleShot(0, lambda: voice.start_listening(capture_id))
-            # Show waveform in notch idle pill
-            QTimer.singleShot(0, lambda: notch.set_recording(True))
+            if voice.enabled:
+                QTimer.singleShot(0, lambda: voice.start_listening(capture_id))
+                # Show waveform in notch idle pill
+                QTimer.singleShot(0, lambda: notch.set_recording(True))
         else:
-            is_annotating = False
-            QTimer.singleShot(0, overlay.hide_overlay)
-            QTimer.singleShot(0, voice.stop_listening)
-            # Restore logo in notch idle pill
-            QTimer.singleShot(0, lambda: notch.set_recording(False))
-            
-            # If no selection comes, cancellation is handled in hide_overlay/on_selection
+            finish_annotation()
+
+    def finish_annotation():
+        """Complete the active capture (finish hotkey / voice result).
+
+        A no-op when no capture is running, so the Ctrl+Shift+Enter hotkey
+        or a stray voice result can never start anything.
+        """
+        nonlocal is_annotating
+        if not is_annotating:
+            return
+        is_annotating = False
+        QTimer.singleShot(0, overlay.hide_overlay)
+        QTimer.singleShot(0, voice.stop_listening)
+        # Restore logo in notch idle pill
+        QTimer.singleShot(0, lambda: notch.set_recording(False))
+
+    def on_overlay_cancelled():
+        """Escape was pressed: abort the capture without a screenshot."""
+        nonlocal is_annotating, current_voice_text
+        is_annotating = False
+        current_voice_text = ""
+        QTimer.singleShot(0, voice.stop_listening)
+        QTimer.singleShot(0, lambda: notch.set_recording(False))
+        session = session_manager.active_session
+        if session is not None:
+            try:
+                session_manager.transition_to(CaptureState.CANCELLED)
+            except ValueError:
+                pass  # already terminal — nothing left to cancel
+        notch.set_status("Capture cancelled")
+        QTimer.singleShot(4000, _clear_cancelled_status)
+
+    def _clear_cancelled_status():
+        if notch.status_text == "Capture cancelled":
+            notch.set_status("")
 
     notch.on_highlight_requested = toggle_annotation
     notch.on_project_selected = orchestrator.set_project_dir
@@ -324,8 +354,8 @@ def main():
 
         try:
             session_manager.transition_to(CaptureState.RUNNING)
-            from arrow.providers.agentation import AgentationClient, send_capture_annotation
-            client = AgentationClient()
+            from arrow.providers.agentation import client_from_config, send_capture_annotation
+            client = client_from_config()
 
             filename = os.path.basename(record.screenshot_path)
             # Hand Agentation a short-lived, single-file scoped URL instead of
@@ -356,17 +386,22 @@ def main():
                 )
 
     overlay.selection_complete.connect(on_selection)
+    overlay.cancelled.connect(on_overlay_cancelled)
 
     # -- Signal bridge to safely handle global hotkey from background listener thread --
     class HotkeyBridge(QObject):
         triggered = pyqtSignal()
+        finish_triggered = pyqtSignal()
 
     hotkey_bridge = HotkeyBridge()
     hotkey_bridge.triggered.connect(toggle_annotation)
+    hotkey_bridge.finish_triggered.connect(finish_annotation)
 
     try:
         import keyboard
         keyboard.add_hotkey("ctrl+shift+space", hotkey_bridge.triggered.emit)
+        # Explicit finish: never starts a capture, only completes one.
+        keyboard.add_hotkey("ctrl+shift+enter", hotkey_bridge.finish_triggered.emit)
     except Exception as e:
         log.warning("Could not register global hotkey: %s", e)
 

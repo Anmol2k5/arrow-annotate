@@ -46,17 +46,19 @@ loopback binding). Non-loopback hosts are rejected unless
 - Draw a source region; draw a second stroke for an optional destination.
   A blue gesture trail follows the pointer and fades over about 3 seconds,
   while the red/green source/destination marks remain until you finish.
-- Press **Ctrl+Shift+Space** again or **Esc** to finish. Note that Esc
-  currently completes the capture, rather than cancelling it.
+- Press **Ctrl+Shift+Space** again or **Ctrl+Shift+Enter** to finish;
+  press **Esc** to cancel the capture without taking a screenshot.
+  Starting without drawing any stroke and finishing captures the full
+  screen; cancelling never does.
 - Voice recognition starts during capture when available; it uses Google
   speech recognition by default, which requires a network connection.
   Unrecognized speech no longer ends the capture. You can instead edit
   the instruction on the resulting screenshot card.
 - The notch shows captured images. **Edit** or **Copy** a compiled request,
   or select **Codex**/**Claude Code** when the matching local CLI is installed.
-  The app currently also attempts to hand completed captures to Agentation
-  at `http://127.0.0.1:4747`; that optional integration may report offline
-  while local screenshots remain available.
+The app currently also attempts to hand completed captures to Agentation
+at `ARROW_AGENTATION_URL` (default `http://127.0.0.1:4747`); that optional
+integration may report offline while local screenshots remain available.
 
 The companion browser extension lets you annotate live web pages the same
 way; captures flow through the same local pipeline.
@@ -69,9 +71,12 @@ way; captures flow through the same local pipeline.
    (`127.0.0.1` / `localhost`) on the configured port, authenticates with a
    token from the desktop app, and shows live connection state
    (connecting / authenticating / connected / auth failed / server
-   unavailable).
-4. The extension requests only `activeTab` and `storage`; page access is
-   limited to loopback HTTP(S) endpoints of the local app.
+   unavailable). If you changed `ARROW_WS_PORT`, enter the same
+   `ws://` URL in the popup's "Bridge URL" field — non-loopback
+   addresses are rejected.
+4. The extension requests `activeTab`, `storage` and `scripting`; its host
+   permissions are loopback-only. Page access is optional and per-site: click
+   "Allow access to this site" in the popup for sites you want to annotate.
 
 ## Privacy
 
@@ -80,8 +85,9 @@ way; captures flow through the same local pipeline.
   (`arrow.db`) stores capture metadata only.
 - Share links are HMAC-signed, expire after 15 minutes, and are scoped to a
   single file — they are not reusable as a general API token.
-- The extension cannot read arbitrary sites: its host permissions are
-  loopback-only and its content scripts do not run on the open web.
+- The extension cannot read arbitrary sites: its required host permissions are
+  loopback-only, it declares no content scripts, and its inspector is injected
+  on demand — and only on sites you explicitly allow in the popup.
 
 ## Documentation
 

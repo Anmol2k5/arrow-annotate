@@ -361,3 +361,32 @@ def test_generation_advances_on_start_and_stop(fake_sr):
     assert voice.generation > g1
     voice.start_listening("cap2")
     assert voice.generation >= g1
+
+
+# ---------------------------------------------------------------------------
+# Voice privacy: ARROW_VOICE_TRANSCRIPTION=off must never touch the mic
+# ---------------------------------------------------------------------------
+
+
+def test_disabled_voice_never_opens_microphone_or_network(fake_sr):
+    _qapp()
+    voice = VoiceInput(enabled=False)
+    events = {"results": [], "errors": [], "listening": []}
+    voice.result_ready.connect(lambda text, cid: events["results"].append((text, cid)))
+    voice.error.connect(lambda msg, cid: events["errors"].append((msg, cid)))
+    voice.listening_changed.connect(lambda on: events["listening"].append(on))
+
+    voice.start_listening("cap1")
+    voice.start_listening("cap2")
+    time.sleep(0.2)
+    _qapp().processEvents()
+
+    assert voice.is_listening is False
+    assert fake_sr.mic_open_count == 0, "disabled voice must not open the microphone"
+    assert events["listening"] == [], "disabled voice must not claim to be recording"
+    assert events["results"] == []
+    assert events["errors"] == []
+
+    # stop() remains a safe no-op.
+    voice.stop_listening()
+    assert voice.is_listening is False

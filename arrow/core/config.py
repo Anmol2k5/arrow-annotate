@@ -106,6 +106,19 @@ def _parse_bool(raw: Optional[str]) -> bool:
     return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_VOICE_TRANSCRIPTION_MODES = ("google", "off")
+
+
+def _parse_voice_transcription(raw: Optional[str]) -> str:
+    value = (raw or "google").strip().lower() or "google"
+    if value not in _VOICE_TRANSCRIPTION_MODES:
+        raise ConfigError(
+            f"ARROW_VOICE_TRANSCRIPTION must be one of "
+            f"{', '.join(_VOICE_TRANSCRIPTION_MODES)}, got {raw!r}"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """Validated runtime configuration."""
@@ -163,9 +176,27 @@ def load_config(override: Optional[Mapping[str, str]] = None) -> AppConfig:
         agentation_url=(env.get("ARROW_AGENTATION_URL") or "http://127.0.0.1:4747").strip(),
         log_level=_parse_log_level(env.get("ARROW_LOG_LEVEL")),
         enabled_capabilities=env.get("ARROW_ENABLED_CAPABILITIES") or None,
-        voice_transcription=(env.get("ARROW_VOICE_TRANSCRIPTION") or "google").strip().lower(),
+        voice_transcription=_parse_voice_transcription(env.get("ARROW_VOICE_TRANSCRIPTION")),
         env=env,
     )
+
+
+def env_value(key: str, default: str = "") -> str:
+    """Uncached lookup of a single config key: real env wins over ``.env``.
+
+    Consumers that construct objects at import time (token store, capability
+    manager) cannot wait for :func:`get_config` and must still honor values
+    advertised in ``.env``.
+    """
+    if key in os.environ:
+        return os.environ[key]
+    return load_dotenv().get(key, default)
+
+
+def resolve_home() -> str:
+    """ARROW_HOME from env/``.env`` (default ``~/.arrow``), uncached."""
+    home = env_value("ARROW_HOME") or os.path.join(os.path.expanduser("~"), ".arrow")
+    return os.path.abspath(os.path.expanduser(home))
 
 
 _cached: Optional[AppConfig] = None
@@ -205,7 +236,9 @@ __all__ = [
     "LOCALHOST_HOSTS",
     "get_config",
     "load_config",
+    "env_value",
     "load_dotenv",
     "port_available",
     "reset_config_cache",
+    "resolve_home",
 ]

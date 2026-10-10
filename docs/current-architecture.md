@@ -1,6 +1,6 @@
 # Arrow Annotate — Current Architecture
 
-_Last verified against the source tree on 2026-10-09. This document describes the
+_Last verified against the source tree on 2026-10-10. This document describes the
 implementation as it exists, not an aspirational design._
 
 ## 1. Technology stack
@@ -37,7 +37,8 @@ flowchart TD
     A[User: notch button or Ctrl+Shift+Space] --> B[SessionManager.start_session<br/>IDLE → STARTING → ANNOTATING]
     B --> C[SelectionOverlay.show_overlay<br/>source + optional destination strokes]
     B --> D[VoiceInput.start_listening<br/>capture_id scoped]
-    C -->|hotkey release / Esc| E[selection_complete signal]
+    C -->|Ctrl+Shift+Space or Ctrl+Shift+Enter| E[selection_complete signal]
+    C -->|Esc| C2[cancelled signal → session CANCELLED, no screenshot]
     D -->|transcript| F[on_voice_result stores text]
     E --> G[on_selection: transition COLLECTING_CONTEXT<br/>hide overlay, grab cursor + window title]
     G --> H[ScreenshotService.capture_raw<br/>main thread, overlay hidden]

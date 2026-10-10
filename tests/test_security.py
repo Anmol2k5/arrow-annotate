@@ -141,6 +141,19 @@ def test_capability_enable_disable():
     assert caps.is_enabled(Capability.CONTROL_NATIVE) is False
 
 
+def test_capability_reads_dotenv_opt_in(tmp_path, monkeypatch):
+    """ARROW_ENABLED_CAPABILITIES in .env must opt in (audit item P0-5)."""
+    (tmp_path / ".env").write_text(
+        "ARROW_ENABLED_CAPABILITIES=control_native, modify_files\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    monkeypatch.delenv("ARROW_ENABLED_CAPABILITIES", raising=False)
+    caps = CapabilityManager()
+    assert caps.is_enabled(Capability.CONTROL_NATIVE) is True
+    assert caps.is_enabled(Capability.MODIFY_FILES) is True
+    assert caps.is_enabled(Capability.EXECUTE_COMMAND) is False
+
+
 # ---------------------------------------------------------------------------
 # require_capability gate (full Flask stack)
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ Scope: take Arrow Annotate from the audited partial state to a verified, hardene
 - [x] G1: full python test suite passes
   CHECK: .venv\Scripts\python.exe -m pytest -q
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=a4530786d5409e9da1ef234b268bccf686409bdb43e87e9f2269d280ebd31ea6; output-bytes=827
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=c2fcfc54e002e1a8b7d92c2519d141568667b88ea604291c77b7081b653a7f0b; output-bytes=827
 
 - [x] G2: ruff lint clean on repository
   CHECK: .venv\Scripts\python.exe -m ruff check .
@@ -22,7 +22,7 @@ Scope: take Arrow Annotate from the audited partial state to a verified, hardene
 - [x] G3: mypy type-checks the arrow package with no errors
   CHECK: .venv\Scripts\python.exe -m mypy arrow
   EXPECT: Success: no issues found
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=d118a4201f267325695bdc581e6b10cc8bd325c8bd311be8db6a62db052e092f; output-bytes=45
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=834bd60a61a94c70e823fa5a870573323bf86c82ad389ccd0ae9946d8df46746; output-bytes=1586
 
 - [x] G4: browser extension JS and manifest are syntactically valid
   CHECK: node scripts/verify-extension.mjs
@@ -32,52 +32,52 @@ Scope: take Arrow Annotate from the audited partial state to a verified, hardene
 - [x] G5: unauthenticated and wrongly-authenticated access to private screenshot/context endpoints is rejected while authorized access works
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_security.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=23c92264ae9303fdd1653bc7c4beb200f0286a17b0e5935874496347dc81a822; output-bytes=501
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=ed769f3f712fe9024df7656e4ea9168bbd0b5aca9a4676a4ed0c72d8020d75b5; output-bytes=501
 
 - [x] G6: screenshot filenames are collision-resistant under same-second and concurrent saves, and saved uploads are validated
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_screenshot_upload.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=bb44da337dda6c02c8b19156a6b55849f15850871d92c70b67a2c96eef815013; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=7459f74aa300a1c045227164de601adbfea480691a6db666d304d32bbb4000e9; output-bytes=101
 
 - [x] G7: crop geometry is correct for nonzero/negative monitor origins (multi-monitor)
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_crop_geometry.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=58961c51cd7c08b734aefecf8e62256f8c3718049b5c28ef7147735af109dede; output-bytes=100
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=4a7a681458c41df32870635250738c8dbabc6038c8e530a18d9ddbe5c0bc3698; output-bytes=100
 
 - [x] G8: capture session state machine rejects invalid transitions and attaches failures to the correct capture
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_session.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=99e75346e1943fb4bf2776003e61eb0ac20b2fb2a3834663dfdf6a7d11879970; output-bytes=100
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=69e797f3800e0698e8427bc7eea8af3cbe63664e093989099c3f9b4996127200; output-bytes=100
 
 - [x] G9: voice capture uses generation-based cancellation; a stopped session cannot clobber the next session
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_voice_input.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=70de5d173f1569e2b4ddedab6e04c93c2bc13112303e98073f8d65e8eb62b78e; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=52fdf12ef24ea82daf9c1b072f37d739d37d06b35d33efb660d1a7dd27e7b7ae; output-bytes=101
 
 - [x] G10: background workers never touch Qt widgets directly; stale callbacks are discarded; screenshot failure cannot wedge the session
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_threading.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=f6241ecc253a2b72e5ab89d8963fa418f4b48048b0f0875d06fc4c4aca6a759a; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=0ba0b5338040ae1904192dfff69a6afe8b469a10336b84706d09f6b43eadc1e5; output-bytes=101
 
 - [x] G11: notch status methods (set_status/update_status) drive a real visible status model instead of no-ops
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_notch_status.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=1441c6f047e5b9a329a66421fcdc902715a8d17252c6d3f16ccb236a9c5815d1; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=8b7aa674210f048f6461ff98d81b4e00cab5f8ea36e25a51305a1d2d266d93a7; output-bytes=101
 
 - [x] G12: configuration is validated (ports, loopback binding) and read from environment with a single source of truth
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_settings.py tests/test_config.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=a1679af5ca531a192b6a4c8d806f4dd301f611101276a4cc997dfb6a205ed3d9; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=1ef450ce4094e7fc0fd00d683855d5925a378a6b3e62bfbf448666cbd518eb18; output-bytes=101
 
 - [x] G13: capture → store → intent → provider end-to-end flow works with Agentation offline degrading gracefully
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_orchestrator.py tests/test_providers.py tests/test_agentation.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=4f5dd5940e185f6a1d0ec2c31f6e61ce9df288a9a32a4a433db7d12d860835ac; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=c9be1cc22aee9b2c4e3067eae9d29362bba770c0098d68f5219a0ffa8e5be6c0; output-bytes=101
 
 - [x] G14: scoped short-lived screenshot share tokens let an approved consumer fetch a shared capture and reject expired/foreign tokens
   CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_share_tokens.py
   EXPECT: /^\d+ passed/m
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=414202a270a592a6d66041f686b6160d762c6ae9395d9ce5b49f469fd187a069; output-bytes=101
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=62bc3f799dd58271b7d374b539674087d4954b3f0b8770e5208ba789fedad2c5; output-bytes=101
 
 - [x] G15: documentation set exists and matches the implementation
   CHECK: node scripts/verify-docs.mjs
@@ -88,6 +88,11 @@ Scope: take Arrow Annotate from the audited partial state to a verified, hardene
   CHECK: node scripts/verify-ci.mjs
   EXPECT: ci verification passed
   EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=3854f9438c6d2794b7bd0919dd904c22c7d14899860815de67abdb264edec66e; output-bytes=23
+
+- [x] G18: Escape cancels an active capture without emitting a selection, and a duplicate finish trigger emits selection_complete exactly once
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_overlay_cancel.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=6a44ac67f3984606178c8277ebbfd551311e0a64d71d16847a2ce984d7fbbb13; output-bytes=100
 
 - [ ] G17: end-to-end GUI capture flow exercised on a real Windows desktop session
   EVIDENCE: pending

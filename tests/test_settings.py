@@ -29,3 +29,11 @@ def test_config_dir_is_created(tmp_path, monkeypatch):
     home = str(tmp_path / "home")
     monkeypatch.setenv("ARROW_HOME", home)
     assert os.path.isdir(settings.config_dir())
+
+
+def test_config_dir_honors_dotenv(tmp_path, monkeypatch):
+    """ARROW_HOME in .env must reach settings, not just the real environment."""
+    (tmp_path / ".env").write_text(f"ARROW_HOME={tmp_path / 'home-from-dotenv'}\n", encoding="utf-8")
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    monkeypatch.delenv("ARROW_HOME", raising=False)
+    assert settings.config_dir() == str(tmp_path / "home-from-dotenv")

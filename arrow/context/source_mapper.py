@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -228,6 +228,8 @@ class SourceMapper:
     # --- Tier 1: data-arrow-id -------------------------------------------
 
     def _by_arrow_id(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         for attr, value in (("data-arrow-id", element.arrow_id), ("data-testid", element.test_id)):
             if not value:
                 continue
@@ -266,6 +268,8 @@ class SourceMapper:
     # --- Tier 2: development instrumentation -----------------------------
 
     def _by_dev_instrumentation(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         src = element.react_source
         if not src:
             return None
@@ -290,6 +294,8 @@ class SourceMapper:
     # --- Tier 3: source map ----------------------------------------------
 
     def _by_source_map(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         src = element.source_map
         if not src:
             return None
@@ -314,6 +320,8 @@ class SourceMapper:
     # --- Tier 4: framework component metadata ----------------------------
 
     def _by_component(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         component = _leaf_component(element.component)
         if not component or not re.match(r"^[A-Z][A-Za-z0-9_]*$", component):
             return None
@@ -344,13 +352,13 @@ class SourceMapper:
             return None
 
         if len(results) == 1:
-            src, (line, evidence) = next(iter(results.items()))
+            src, (line_no, evidence) = next(iter(results.items()))
             return SourceMappingResult(
                 resolved=True,
                 method="framework_component",
                 component=component,
                 source_file=_rel(self.root, src),
-                source_line=line,
+                source_line=line_no,
                 confidence=0.8,
                 evidence=evidence,
             )
@@ -370,6 +378,8 @@ class SourceMapper:
     # --- Tier 5: route ---------------------------------------------------
 
     def _by_route(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         route = element.route
         if not route or route == "/":
             return None
@@ -403,6 +413,8 @@ class SourceMapper:
     # --- Tier 6/7: visible text ------------------------------------------
 
     def _by_text(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         text = (element.text or "").strip()
         if not text or len(text) < 3 or len(text) > 60:
             return None
@@ -437,6 +449,8 @@ class SourceMapper:
     # --- Tier 8: selector / structural -----------------------------------
 
     def _by_selector(self, element: ElementContext) -> Optional[SourceMappingResult]:
+        if self.root is None:
+            return None
         token = element.element_id
         if not token:
             classes = (element.class_name or "").split()
@@ -508,11 +522,11 @@ def _component_from_path(path: str) -> Optional[str]:
     return None
 
 
-def _verify_line(path: str, line_number: object) -> Optional[int]:
+def _verify_line(path: str, line_number: Any) -> Optional[int]:
     """Return the line number only if it exists within the file, else None."""
     if not isinstance(line_number, int) or line_number < 1:
         try:
-            line_number = int(line_number)  # type: ignore[arg-type]
+            line_number = int(line_number)
         except (TypeError, ValueError):
             return None
     lines = _read_lines(path)

@@ -50,7 +50,7 @@ FakeWebSocket.CONNECTING = 0;
 FakeWebSocket.OPEN = 1;
 FakeWebSocket.CLOSED = 3;
 
-function makeEnv({ token = "secret-token", wsUrl = "" } = {}) {
+function makeEnv({ token = "secret-token", wsUrl = "", injected = true, injectFails = false } = {}) {
   FakeWebSocket.instances = [];
   const storageData = {};
   if (token) storageData.arrowToken = token;
@@ -60,6 +60,9 @@ function makeEnv({ token = "secret-token", wsUrl = "" } = {}) {
   const badges = [];
   const messages = [];
   const runtimeListeners = [];
+
+  // Simulates the content script being (not yet) present in the tab.
+  const state = { injected, injectCalls: 0 };
 
   const chrome = {
     storage: {
@@ -102,7 +105,22 @@ function makeEnv({ token = "secret-token", wsUrl = "" } = {}) {
         return [{ id: 1 }];
       },
       async sendMessage() {
+        if (!state.injected) {
+          throw new Error("Could not establish connection. Receiving end does not exist.");
+        }
         return { selector: "#ok" };
+      },
+    },
+    scripting: {
+      async executeScript() {
+        state.injectCalls += 1;
+        if (injectFails) {
+          throw new Error(
+            "Cannot access contents of the page. Extension manifest must request permission to access the respective host."
+          );
+        }
+        state.injected = true;
+        return [];
       },
     },
   };
@@ -124,6 +142,7 @@ function makeEnv({ token = "secret-token", wsUrl = "" } = {}) {
     JSON,
     String,
     Promise,
+    URL,
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -134,6 +153,7 @@ function makeEnv({ token = "secret-token", wsUrl = "" } = {}) {
     badges,
     messages,
     runtimeListeners,
+    state,
     timers: timers.filter((t) => !t.cleared),
     fireTimer(index) {
       const t = timers[index];
@@ -176,6 +196,39 @@ test("with token → connects, authenticates, reaches connected", async () => {
   ws._message({ type: "auth_ok" });
   assert.equal(env.lastState(), "connected");
   assert.equal(env.lastBadge(), "ON");
+});
+
+test("configured loopback wsUrl overrides the default port", async () => {
+  const env = makeEnv({ wsUrl: "ws://127.0.0.1:6002" });
+  await flush();
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(FakeWebSocket.instances[0].url, "ws://127.0.0.1:6002");
+});
+
+test("localhost wsUrl with a port is accepted", async () => {
+  const env = makeEnv({ wsUrl: "ws://localhost:7002" });
+  await flush();
+  assert.equal(FakeWebSocket.instances[0].url, "ws://localhost:7002");
+});
+
+test("non-loopback or malformed wsUrl falls back to the loopback default", async () => {
+  for (const bad of [
+    "wss://evil.example.com/steal",
+    "ws://192.168.1.10:5002",
+    "http://127.0.0.1:5002",
+    "not-a-url",
+    "ws://evil.example.com:5002",
+  ]) {
+    const env = makeEnv({ wsUrl: bad });
+    await flush();
+    assert.equal(
+      FakeWebSocket.instances[0].url,
+      "ws://127.0.0.1:5002",
+      `expected fallback for ${bad}`
+    );
+    // Cleanup per iteration: nothing shared between runs.
+    env.storageData.arrowConnState = undefined;
+  }
 });
 
 test("wrong token → auth_failed and does not spin reconnect", async () => {
@@ -275,6 +328,38 @@ test("inspect request is forwarded to the tab and replied", async () => {
   assert.equal(replies.length, 1);
   assert.equal(replies[0].id, "42");
   assert.equal(replies[0].selector, "#ok");
+  // Content script already present → no injection needed.
+  assert.equal(env.state.injectCalls, 0);
+});
+
+test("inspect injects the content script on demand when absent", async () => {
+  const env = makeEnv({ injected: false });
+  await flush();
+  const ws = FakeWebSocket.instances[0];
+  ws._open();
+  ws._message({ type: "auth_ok" });
+  ws._message({ type: "inspect", id: "7", x: 1, y: 2 });
+  await flush();
+  const replies = ws.sent.filter((m) => m.type === "inspect_result");
+  assert.equal(env.state.injectCalls, 1, "content script must be injected on demand");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, "7");
+  assert.equal(replies[0].selector, "#ok");
+});
+
+test("inspect without page permission replies with an actionable error", async () => {
+  const env = makeEnv({ injected: false, injectFails: true });
+  await flush();
+  const ws = FakeWebSocket.instances[0];
+  ws._open();
+  ws._message({ type: "auth_ok" });
+  ws._message({ type: "inspect", id: "9", x: 5, y: 6 });
+  await flush();
+  const replies = ws.sent.filter((m) => m.type === "inspect_result");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, "9");
+  assert.ok(replies[0].error, "expected an error reply");
+  assert.match(replies[0].error, /permission|page access/i);
 });
 
 test("malformed JSON from desktop does not throw", async () => {

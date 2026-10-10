@@ -1,20 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Arrow Annotate Bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Connects the Arrow Annotate desktop app to web pages for element inspection",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
     "default_title": "Arrow Annotate Bridge",
     "default_popup": "popup.html"

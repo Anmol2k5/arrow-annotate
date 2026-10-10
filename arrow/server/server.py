@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import Future
 from functools import wraps
+from typing import Optional
 
 import websockets
 from flask import Flask, jsonify, request, send_from_directory
@@ -92,7 +93,7 @@ class OSController:
         ctypes.windll.user32.keybd_event(vk, 0, 2, 0)
 
     @classmethod
-    def click(cls, target: str = "", x: int = None, y: int = None):
+    def click(cls, target: str = "", x: Optional[int] = None, y: Optional[int] = None):
         """Click at current cursor position or specified (x, y)."""
         if x is not None and y is not None:
             ctypes.windll.user32.SetCursorPos(x, y)
@@ -103,7 +104,7 @@ class OSController:
         return {"action": "click", "target": target, "x": x, "y": y}
 
     @classmethod
-    def right_click(cls, x: int = None, y: int = None):
+    def right_click(cls, x: Optional[int] = None, y: Optional[int] = None):
         if x is not None and y is not None:
             ctypes.windll.user32.SetCursorPos(x, y)
             time.sleep(0.05)
@@ -113,7 +114,7 @@ class OSController:
         return {"action": "right_click", "x": x, "y": y}
 
     @classmethod
-    def double_click(cls, x: int = None, y: int = None):
+    def double_click(cls, x: Optional[int] = None, y: Optional[int] = None):
         cls.click(x=x, y=y)
         time.sleep(0.04)
         cls.click(x=x, y=y)

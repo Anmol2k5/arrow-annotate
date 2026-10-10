@@ -7,7 +7,7 @@ Produces two outputs for every capture:
    path, gesture trail, voice transcript, AX/UIA element context, resolved
    anchors, and change request summary.  Cheap for an LLM to read.
 
-2. ``~/.arrow/latest/`` mirror — the annotated screenshot, context.md and a
+2. ``$ARROW_HOME/latest/`` mirror — the annotated screenshot, context.md and a
    manifest.json are written to a fixed path so *any* agent can consume
    them by file path, even without MCP support.
 
@@ -20,10 +20,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from pathlib import Path
 from typing import Any, Optional
 
-LATEST_DIR = os.path.join(Path.home(), ".arrow", "latest")
+from arrow.core.config import resolve_home
+
+
+def latest_dir() -> str:
+    """Mirror directory for the latest capture (``$ARROW_HOME/latest``)."""
+    return os.path.join(resolve_home(), "latest")
 
 
 def build_context_md(
@@ -120,19 +124,20 @@ def mirror_latest(
     capture_id: str,
     assets: Optional[dict] = None,
 ) -> str:
-    """Write the latest capture to ``~/.arrow/latest/`` for file-path access.
+    """Write the latest capture to ``$ARROW_HOME/latest/`` for file-path access.
 
     Returns the directory path.
     """
-    os.makedirs(LATEST_DIR, exist_ok=True)
+    dst_dir = latest_dir()
+    os.makedirs(dst_dir, exist_ok=True)
 
     # Copy the annotated screenshot.
-    dst_img = os.path.join(LATEST_DIR, "capture.png")
+    dst_img = os.path.join(dst_dir, "capture.png")
     if os.path.isfile(annotated_path):
         shutil.copy2(annotated_path, dst_img)
 
     # Write context.md.
-    dst_ctx = os.path.join(LATEST_DIR, "context.md")
+    dst_ctx = os.path.join(dst_dir, "context.md")
     with open(dst_ctx, "w", encoding="utf-8") as f:
         f.write(context_md)
 
@@ -144,11 +149,11 @@ def mirror_latest(
     }
     if assets:
         manifest["assets"] = assets
-    dst_manifest = os.path.join(LATEST_DIR, "manifest.json")
+    dst_manifest = os.path.join(dst_dir, "manifest.json")
     with open(dst_manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    return LATEST_DIR
+    return dst_dir
 
 
 def _format_context(ctx: dict) -> str:
@@ -164,4 +169,4 @@ def _format_context(ctx: dict) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["build_context_md", "mirror_latest", "LATEST_DIR"]
+__all__ = ["build_context_md", "latest_dir", "mirror_latest"]

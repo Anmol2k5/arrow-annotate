@@ -167,3 +167,10 @@ class AgentationClient:
             return resp.json()
         except requests.RequestException as e:
             raise AgentationError(f"PATCH {path} failed: {e}") from e
+
+
+def client_from_config() -> AgentationClient:
+    """Build a client from validated config (``ARROW_AGENTATION_URL``)."""
+    from arrow.core.config import get_config
+
+    return AgentationClient(base_url=get_config().agentation_url)

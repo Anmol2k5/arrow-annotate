@@ -6,15 +6,16 @@ Branch: `fix/arrow-annotate-prelaunch`
 ## Python suite
 
 ```
-317 passed, 1 warning in 21.56s
+345 passed, 1 warning in 24.95s
 ```
 
 - The single warning is a pre-existing `mss.mss` deprecation in
   `arrow/server/server.py` and does not affect results.
 - Baseline before this pass (after fast-forward to `70b5d8c`): 314 passed.
-- New/updated tests in this pass: `test_trail_fade` (layer ordering,
-  continuous band painting along a curve), `test_agentation` (offline
-  completes session; `complete_if_active` ignores superseded sessions).
+- Suites added since then include: overlay math (P0-1 negative coords),
+  database asset handling (P0-3), extension/config/agentation unit tests
+  (P0-5), and `test_overlay_cancel.py` (P0-6 Escape/finish semantics,
+  7 tests), plus `test_context_file.py` (4 tests).
 
 ## Static checks
 
@@ -23,6 +24,13 @@ ruff check .        → All checks passed!
 mypy arrow          → Success: no issues found in 49 source files
 ```
 
+- mypy runs with **no suppressions**: the `[[tool.mypy.overrides]]`
+  `ignore_errors` block for `arrow.ui/server/context/providers` was removed
+  from `pyproject.toml` and all 46 previously hidden errors were fixed.
+- mypy prints `annotation-unchecked` notes (informational; exit 0). Running
+  with `--check-untyped-defs` would surface ~20 further strictness findings,
+  mostly in `notch.py`; this is outside the current gate scope.
+
 ## Browser extension
 
 ```
@@ -30,16 +38,21 @@ node scripts/verify-extension.mjs → extension verification passed
 ```
 
 Includes manifest/permission assertions (no `<all_urls>`, loopback-only
-hosts, `activeTab`+`storage` only) and 9 vm-sandboxed background
-state-machine tests.
+hosts, `activeTab`+`storage` only) and 14 vm-sandboxed background
+state-machine tests (`node --test` → 14 pass / 0 fail), including the
+`sanitizeWsUrl` loopback/port validation tests added for P0-5.
 
 ## Gate ledger
 
 ```
-GATES.md: 17 met / 1 unmet
-  met:   G0–G16
+GATES.md: 19 gates
+  met:   G0–G16 + G18 (all re-verified 2026-10-10 with fresh evidence)
   unmet: G17 manual GUI smoke run → requires a human on a real desktop
 ```
+
+- G18 (new): Escape cancels an active capture without emitting a
+  selection; a duplicate finish trigger emits `selection_complete` exactly
+  once.
 
 ## Manual Windows validation (required, not automated)
 
@@ -53,6 +66,8 @@ on an interactive Windows desktop:
 - Scenario E: notch expand/collapse feel.
 - Scenario F: live microphone voice path (fakes cover logic only).
 - Scenario G: Agentation stopped → amber "offline — capture saved" status.
+- Hotkeys: Ctrl+Shift+Space start, Ctrl+Shift+Enter finish, Escape cancel
+  (implemented + unit-tested; not exercised live).
 
 ## Regression proof (voice race)
 

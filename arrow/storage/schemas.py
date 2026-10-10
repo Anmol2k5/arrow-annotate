@@ -9,6 +9,10 @@ class CaptureRecord(BaseModel):
     id: str
     timestamp: str
     screenshot_path: str
+    # Every file the pipeline wrote for this capture (raw, crops, agent
+    # copies...). Deletion must remove all of them, not just the annotated
+    # screenshot — otherwise files accumulate in screenshots/ forever.
+    assets: Dict[str, str] = Field(default_factory=dict)
     annotation_text: str = ""
     cursor_x: int = 0
     cursor_y: int = 0

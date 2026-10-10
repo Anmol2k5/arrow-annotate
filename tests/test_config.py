@@ -8,9 +8,11 @@ import pytest
 
 from arrow.core.config import (
     ConfigError,
+    env_value,
     load_config,
     load_dotenv,
     reset_config_cache,
+    resolve_home,
 )
 
 
@@ -93,6 +95,23 @@ def test_invalid_log_level_rejected(monkeypatch):
         load_config()
 
 
+def test_voice_transcription_defaults_to_google():
+    cfg = load_config({})
+    assert cfg.voice_transcription == "google"
+
+
+def test_voice_transcription_off_accepted(monkeypatch):
+    monkeypatch.setenv("ARROW_VOICE_TRANSCRIPTION", "off")
+    assert load_config().voice_transcription == "off"
+
+
+def test_invalid_voice_transcription_rejected(monkeypatch):
+    monkeypatch.setenv("ARROW_VOICE_TRANSCRIPTION", "whisper-cloud")
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "ARROW_VOICE_TRANSCRIPTION" in str(exc.value)
+
+
 def test_load_dotenv_parses_quotes_comments_and_export(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -113,3 +132,39 @@ def test_load_dotenv_parses_quotes_comments_and_export(tmp_path):
 
 def test_load_dotenv_missing_file_is_empty(tmp_path):
     assert load_dotenv(str(tmp_path / "nope.env")) == {}
+
+
+# ---------------------------------------------------------------------------
+# env_value / resolve_home (uncached helpers for import-time consumers)
+# ---------------------------------------------------------------------------
+
+
+def test_env_value_prefers_real_env(monkeypatch):
+    monkeypatch.setenv("ARROW_AGENTATION_URL", "http://127.0.0.1:9999")
+    assert env_value("ARROW_AGENTATION_URL") == "http://127.0.0.1:9999"
+
+
+def test_env_value_reads_dotenv_when_env_absent(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("ARROW_AGENTATION_URL=http://127.0.0.1:8888\n", encoding="utf-8")
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    assert env_value("ARROW_AGENTATION_URL") == "http://127.0.0.1:8888"
+
+
+def test_env_value_default_when_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    assert env_value("ARROW_NO_SUCH_KEY", "fallback") == "fallback"
+
+
+def test_resolve_home_defaults_to_dot_arrow():
+    assert resolve_home() == os.path.abspath(os.path.expanduser("~/.arrow"))
+
+
+def test_resolve_home_honors_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARROW_HOME", str(tmp_path / "data"))
+    assert resolve_home() == str(tmp_path / "data")
+
+
+def test_resolve_home_honors_dotenv(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text(f"ARROW_HOME={tmp_path / 'from-dotenv'}\n", encoding="utf-8")
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    assert resolve_home() == str(tmp_path / "from-dotenv")

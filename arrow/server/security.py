@@ -32,6 +32,14 @@ from typing import Iterable, Optional
 
 log = logging.getLogger("arrow.server.security")
 
+# Config rationale (audit §7):
+#   * 8 MiB request cap — bounds Flask's in-memory buffer for the local API;
+#     actual image uploads are further limited by size, dimension, and pixel
+#     count in arrow/server/screenshots.py before any decoding.
+#   * Loopback-only hosts / origin allow-list — this is a single-user desktop
+#     tool, so the trust boundary is the machine itself; keeping the server
+#     off the network (and rejecting non-local browser origins) blocks remote
+#     callers and DNS-rebinding/CSRF-style access from web pages.
 MAX_REQUEST_BYTES = 8 * 1024 * 1024  # 8 MiB
 LOCALHOST_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -41,9 +49,9 @@ DEFAULT_SHARE_TTL_SECONDS = 15 * 60
 
 
 def _config_dir() -> str:
-    base = os.environ.get("ARROW_HOME") or os.path.join(
-        os.path.expanduser("~"), ".arrow"
-    )
+    from arrow.core.config import resolve_home
+
+    base = resolve_home()
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -274,7 +282,9 @@ class CapabilityManager:
             self._enabled: set[Capability] = set(enabled)
         else:
             self._enabled = set(DEFAULT_ENABLED)
-            raw = os.environ.get("ARROW_ENABLED_CAPABILITIES", "")
+            from arrow.core.config import env_value
+
+            raw = env_value("ARROW_ENABLED_CAPABILITIES")
             for name in (part.strip() for part in raw.split(",") if part.strip()):
                 try:
                     self._enabled.add(Capability(name))

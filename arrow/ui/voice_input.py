@@ -22,8 +22,11 @@ class VoiceInput(QObject):
     error = pyqtSignal(str, str)
     listening_changed = pyqtSignal(bool)
 
-    def __init__(self):
+    def __init__(self, enabled: bool = True):
         super().__init__()
+        # Privacy gate: when disabled (ARROW_VOICE_TRANSCRIPTION=off) the
+        # microphone is never opened and no audio ever leaves the machine.
+        self._enabled = enabled
         self._lock = threading.Lock()
         self._listening = False
         # Bumped whenever in-flight sessions must be invalidated (stop or a
@@ -38,6 +41,10 @@ class VoiceInput(QObject):
         self.current_capture_id = ""
 
     @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
     def is_listening(self) -> bool:
         return self._listening
 
@@ -50,6 +57,9 @@ class VoiceInput(QObject):
         return self._phase
 
     def start_listening(self, capture_id: str):
+        if not self._enabled:
+            logger.info("Voice transcription disabled; microphone not opened")
+            return
         emit_changed = False
         with self._lock:
             self.current_capture_id = capture_id

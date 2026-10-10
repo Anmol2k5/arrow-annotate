@@ -3,8 +3,9 @@ import math
 import os
 import random
 import threading
+from typing import Optional
 
-from PyQt6.QtCore import (
+from PyQt6.QtCore import (  # type: ignore[attr-defined]
     QEasingCurve,
     QParallelAnimationGroup,
     QPointF,
@@ -931,7 +932,8 @@ class ScreenshotsView(QWidget):
             "1. Select a project with the folder icon.\n"
             "2. Press Ctrl+Shift+Space (or click Capture).\n"
             "3. Draw around a UI element; optionally draw a destination.\n"
-            "4. Press Ctrl+Shift+Space again or Esc to finish.\n"
+            "4. Press Ctrl+Shift+Space or Ctrl+Shift+Enter to finish.\n"
+            "   Press Esc to cancel without capturing.\n"
             "5. Review the screenshot, edit/copy the instruction, "
             "or send it to an installed coding agent.\n\n"
             "Voice starts with capture when enabled. "
@@ -992,17 +994,11 @@ class ScreenshotsView(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             from arrow.storage.capture_store import CaptureStore
             store = CaptureStore()
-            failed = []
             for rec in store.get_all():
+                # delete() removes every tracked asset file (raw, crops,
+                # agent copies) and the DB rows.
                 store.delete(rec.id)
-                if os.path.exists(rec.screenshot_path):
-                    try:
-                        os.remove(rec.screenshot_path)
-                    except Exception:
-                        failed.append(rec.screenshot_path)
             self._scan_existing()
-            if failed:
-                QMessageBox.warning(self, "Partial Cleanup", f"Removed from library but could not delete {len(failed)} file(s):\n" + "\n".join(failed))
 
     def _scan_existing(self):
         for thumb in self._thumbnails:
@@ -1064,7 +1060,7 @@ class ScreenshotsView(QWidget):
 # DynamicNotch  – main overlay widget
 # ---------------------------------------------------------------------------
 class DynamicNotch(QWidget):
-    def __init__(self, server: AgentServer = None):
+    def __init__(self, server: Optional[AgentServer] = None):
         super().__init__()
         self._server = server
         self._state = "idle"
@@ -1081,7 +1077,7 @@ class DynamicNotch(QWidget):
         self._build_ui()
         self._position_idle()
         self._anim_group = None
-        self._auto_collapse_timer = None
+        self._auto_collapse_timer: Optional[QTimer] = None
 
     # -- property for border-radius interpolation --
     def get_anim_progress(self):
@@ -1282,7 +1278,7 @@ class DynamicNotch(QWidget):
         # Cancel auto-collapse if we re-enter
         if self._auto_collapse_timer is not None:
             self._auto_collapse_timer.stop()
-            self._auto_collapse_timer = None
+        self._auto_collapse_timer = None
         self.expand()
         super().enterEvent(event)
 

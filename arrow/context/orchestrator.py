@@ -155,7 +155,7 @@ class ContextOrchestrator:
             destination = self._resolve_anchor("destination", dest_ann) if dest_ann else None
 
             # 3. Repository context (dev-server URL inferred from the page).
-            page_url = (source.context or {}).get("pageUrl")
+            page_url = ((source.context if source is not None else None) or {}).get("pageUrl")
             repo = collect_repository_context(self.project_dir, page_url=page_url)
 
             # 4. Render annotated screenshot + crops (off-screen, pure PIL).
@@ -205,6 +205,7 @@ class ContextOrchestrator:
                 cursor=cursor,
                 window_title=window_title,
                 annotated_path=assets["annotated"],
+                assets=assets,
                 source=source,
                 change_request=change_request,
             )
@@ -461,6 +462,7 @@ class ContextOrchestrator:
         annotated_path: str,
         source: Optional[AnchorResolution],
         change_request: Optional[ChangeRequest] = None,
+        assets: Optional[dict] = None,
     ) -> CaptureRecord:
         source_ctx = (source.context if source else {}) or {}
 
@@ -481,6 +483,7 @@ class ContextOrchestrator:
             id=session.capture_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             screenshot_path=annotated_path,
+            assets=assets or {},
             annotation_text=instruction,
             cursor_x=(cursor[0] if cursor else 0),
             cursor_y=(cursor[1] if cursor else 0),

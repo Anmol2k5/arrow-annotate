@@ -3,7 +3,7 @@ import time
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QApplication, QWidget
 
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
@@ -38,8 +38,9 @@ class Stroke:
 def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optional[dict]:
     """Bounding box of a stroke, mapped to global screen coords, with padding.
 
-    Returns ``None`` for an empty stroke. Coordinates are clamped so the box
-    never starts above/left of the virtual desktop origin.
+    Returns ``None`` for an empty stroke. Coordinates may be negative: the
+    virtual desktop origin is not necessarily (0, 0) when a monitor sits left
+    of or above the primary display.
     """
     if not points:
         return None
@@ -51,8 +52,8 @@ def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optio
     gx = min_x + offset.x()
     gy = min_y + offset.y()
     return {
-        "x": max(0, int(gx - pad)),
-        "y": max(0, int(gy - pad)),
+        "x": int(gx - pad),
+        "y": int(gy - pad),
         "width": int(max_x - min_x + pad * 2),
         "height": int(max_y - min_y + pad * 2),
     }
@@ -88,6 +89,7 @@ class SelectionOverlay(QWidget):
     TRAIL_LAYERS = ((54.0, 0.11), (32.0, 0.26), (18.0, 0.72))
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
+    cancelled = pyqtSignal()  # emitted when the user aborts (Escape) — no selection follows
 
     def __init__(self):
         super().__init__()
@@ -160,13 +162,15 @@ class SelectionOverlay(QWidget):
 
     @pyqtSlot()
     def hide_overlay(self):
-        """Called when hotkey is released; emits the completed selection."""
-        self._active = False
-        self._is_drawing = False
-        self.unsetCursor()
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._fade_timer.stop()
-        self.hide()  # Remove the drawing surface before the raw screenshot.
+        """Finish the capture: hide and emit the completed selection.
+
+        Called when the finish hotkey is pressed. A second call while the
+        overlay is already down is a no-op so a duplicate hotkey trigger can
+        never produce a second capture.
+        """
+        if not self._active:
+            return
+        self._teardown()
 
         def _mock(result):
             class MockResult:
@@ -193,6 +197,27 @@ class SelectionOverlay(QWidget):
             geom = self.geometry()
             rect = {"x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height()}
             self.selection_complete.emit(_mock(rect))
+
+    @pyqtSlot()
+    def cancel_overlay(self):
+        """Abort the capture (Escape): hide without emitting a selection.
+
+        This must never fall through to the full-screen fallback — cancelling
+        means no screenshot is taken at all (audit item P0-6).
+        """
+        if not self._active:
+            return
+        self._teardown()
+        self.cancelled.emit()
+
+    def _teardown(self):
+        """Shared overlay-down work for both finish and cancel paths."""
+        self._active = False
+        self._is_drawing = False
+        self.unsetCursor()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._fade_timer.stop()
+        self.hide()  # Remove the drawing surface before the raw screenshot.
 
     # ------------------------------------------------------------------
     # Mouse input
@@ -454,13 +479,13 @@ class SelectionOverlay(QWidget):
         painter.setBrush(QColor(r, g, b, int(90 * a2)))
         painter.setPen(QPen(QColor(r, g, b, int(70 * a2)), 4, Qt.PenStyle.SolidLine,
                             Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPolygon([tip, left, notch, right])
+        painter.drawPolygon(QPolygonF([tip, left, notch, right]))
 
         # Saturated white-blue core
         painter.setBrush(QColor(cr, cg, cb, int(240 * a2)))
         painter.setPen(QPen(QColor(r, g, b, int(180 * a2)), 1.2, Qt.PenStyle.SolidLine,
                             Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPolygon([tip, left, notch, right])
+        painter.drawPolygon(QPolygonF([tip, left, notch, right]))
 
     # ------------------------------------------------------------------
     # Markers + arrow
@@ -520,11 +545,13 @@ class SelectionOverlay(QWidget):
                      end.y() - arrow_len * math.sin(angle + arrow_angle))
         painter.setBrush(QColor(230, 230, 250, 235))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon([end, p1, p2])
+        painter.drawPolygon(QPolygonF([end, p1, p2]))
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.hide_overlay()
+            # Escape aborts the capture — it must not finish it and must not
+            # fall back to a full-screen screenshot (audit item P0-6).
+            self.cancel_overlay()
         else:
             super().keyPressEvent(event)
 
@@ -543,7 +570,7 @@ class SelectionOverlay(QWidget):
         painter.fillRect(self.rect(), QColor(15, 17, 23, 32))
 
         # Compact guide pill at top center with an electric-blue accent.
-        banner_w, banner_h = 430, 32
+        banner_w, banner_h = 780, 32
         bx = int((self.rect().width() - banner_w) / 2)
         by = 16
         painter.setBrush(QColor(10, 16, 28, 225))
@@ -558,7 +585,7 @@ class SelectionOverlay(QWidget):
         painter.drawText(
             bx, by, banner_w, banner_h,
             Qt.AlignmentFlag.AlignCenter,
-            "1 Current  →  2 Destination   ·   Esc to finish"
+            "1 Current  →  2 Destination   ·   Ctrl+Shift+Enter finishes · Esc cancels"
         )
         
         now = time.time()

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -67,6 +68,50 @@ def test_capture_store_crud(test_db_path):
     store.delete("test_cap_123")
     assert store.get("test_cap_123") is None
     assert len(store.get_all()) == 0
+
+def test_capture_asset_files_deleted_with_capture(tmp_path, test_db_path):
+    """Deleting a capture must remove every asset file the pipeline wrote,
+    not only the annotated screenshot (P0: orphaned raw/crop/agent files)."""
+    shots = tmp_path / "screenshots"
+    shots.mkdir()
+    paths = {}
+    for key in ("raw", "annotated", "context_crop", "source_crop",
+                "destination_crop", "agent-annotated", "agent-crop"):
+        p = shots / f"{key}.png"
+        p.write_bytes(b"png")
+        paths[key] = str(p)
+
+    store = CaptureStore(test_db_path)
+    record = CaptureRecord(
+        id="cap_assets",
+        timestamp="2026-07-10T12:00:00",
+        annotation_text="hi",
+        screenshot_path=paths["annotated"],
+        assets=paths,
+    )
+    store.add(record)
+
+    retrieved = store.get("cap_assets")
+    assert retrieved is not None
+    assert retrieved.assets["raw"] == paths["raw"]
+
+    store.delete("cap_assets")
+    assert store.get("cap_assets") is None
+    leftover = [k for k, p in paths.items() if os.path.exists(p)]
+    assert leftover == [], f"orphaned asset files remain: {leftover}"
+
+
+def test_delete_without_files_still_removes_row(test_db_path):
+    store = CaptureStore(test_db_path)
+    store.add(CaptureRecord(
+        id="cap_missing_files",
+        timestamp="2026-07-10T12:00:00",
+        screenshot_path="/nonexistent/shot.png",
+        assets={"raw": "/nonexistent/raw.png"},
+    ))
+    store.delete("cap_missing_files")  # must not raise
+    assert store.get("cap_missing_files") is None
+
 
 def test_cascading_deletes(test_db_path):
     init_db(test_db_path)

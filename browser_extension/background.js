@@ -28,11 +28,28 @@ let backoffAttempt = 0;
 let currentState = STATE.DISCONNECTED;
 let stoppedByUser = false;
 
+// The bridge URL must be a ws:// connection to a loopback host. Anything
+// else (typo, malicious storage write) falls back to the default so the
+// bearer token can never be sent off this machine.
+function sanitizeWsUrl(raw) {
+  const value = (raw || "").trim();
+  if (!value) return WS_URL_DEFAULT;
+  let url;
+  try {
+    url = new URL(value);
+  } catch (e) {
+    return WS_URL_DEFAULT;
+  }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+  if (url.protocol !== "ws:" || !loopback || !url.port) return WS_URL_DEFAULT;
+  return `ws://${url.hostname}:${url.port}`;
+}
+
 async function getStored() {
   // Migrate the legacy key from older versions of the extension.
   const data = await chrome.storage.local.get(["arrowToken", "bluelyToken", "arrowWsUrl"]);
   const token = (data.arrowToken || data.bluelyToken || "").trim();
-  const wsUrl = (data.arrowWsUrl || "").trim() || WS_URL_DEFAULT;
+  const wsUrl = sanitizeWsUrl(data.arrowWsUrl);
   if (!data.arrowToken && data.bluelyToken) {
     chrome.storage.local.set({ arrowToken: data.bluelyToken });
   }
@@ -246,27 +263,48 @@ async function handleInspect(msg, socket) {
     return;
   }
 
+  // The content script is no longer declared for all sites: it is injected
+  // on demand, only when the desktop app asks to inspect the active tab.
+  let result = null;
   try {
-    const result = await chrome.tabs.sendMessage(tabs[0].id, msg);
-    if (chrome.runtime.lastError) {
-      send({ type: "inspect_result", id: msg.id, error: chrome.runtime.lastError.message });
+    result = await chrome.tabs.sendMessage(tabs[0].id, msg);
+  } catch (e) {
+    // Not injected yet (or the page was reloaded) — inject and retry once.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        files: ["content.js"],
+      });
+      result = await chrome.tabs.sendMessage(tabs[0].id, msg);
+    } catch (injectErr) {
+      const text = String(injectErr && injectErr.message ? injectErr.message : injectErr);
+      // Check the permission case first: Chrome phrases missing host access
+      // as "Cannot access contents of the page. Extension manifest must
+      // request permission…", which would otherwise match the restricted test.
+      const noPermission = /manifest must request permission|host permission/i.test(text);
+      const restricted = /Cannot access|restricted|chrome:\/\//i.test(text);
+      send({
+        type: "inspect_result",
+        id: msg.id,
+        error: noPermission
+          ? "Page access not granted — open the extension popup and allow site access for this tab."
+          : restricted
+            ? "This page does not allow extensions (chrome:// or web store)."
+            : "Content script not loaded: " + text,
+      });
       return;
     }
-    send({
-      type: "inspect_result",
-      id: msg.id,
-      ...(result && result.error ? { error: result.error } : result || {}),
-    });
-  } catch (e) {
-    const restricted = /Cannot access|restricted|chrome:\/\//i.test(String(e && e.message));
-    send({
-      type: "inspect_result",
-      id: msg.id,
-      error: restricted
-        ? "This page does not allow extensions (chrome:// or web store)."
-        : "Content script not loaded: " + (e && e.message ? e.message : e),
-    });
   }
+
+  if (chrome.runtime.lastError) {
+    send({ type: "inspect_result", id: msg.id, error: chrome.runtime.lastError.message });
+    return;
+  }
+  send({
+    type: "inspect_result",
+    id: msg.id,
+    ...(result && result.error ? { error: result.error } : result || {}),
+  });
 }
 
 // Reconnect whenever the user saves, clears or migrates the token.

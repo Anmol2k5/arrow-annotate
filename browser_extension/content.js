@@ -1,10 +1,15 @@
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "inspect") {
-    const result = inspectElement(msg.x, msg.y);
-    sendResponse(result);
-    return true;
-  }
-});
+// On-demand injection may run this file more than once in the same page
+// (e.g. after a reload or a repeated inspect): register the listener once.
+if (!globalThis.__arrowContentLoaded) {
+  globalThis.__arrowContentLoaded = true;
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === "inspect") {
+      const result = inspectElement(msg.x, msg.y);
+      sendResponse(result);
+      return true;
+    }
+  });
+}
 
 function inspectElement(x, y) {
   const borderX = Math.max(0, (window.outerWidth - window.innerWidth) / 2);

@@ -79,11 +79,14 @@ auto-reconnected — the extension waits for the user to fix the token.
 
 ## 8. Remaining open items
 
-- **Read endpoints are unauthenticated by design.** `/status`, `/screenshot`,
-  `/screenshots/*`, `/screenshots/save`, `/resolve`, `/inspect`,
-  `/highlight/resolve`, `/highlight/capture` require no token. This is
-  intentional: the read capabilities are enabled by default, and gating
-  `/screenshots/*` would break the Agentation flow, which fetches screenshot
-  URLs (`http://127.0.0.1:5001/screenshots/<file>`) without auth. Any local
-  process can read screenshots and DOM inspection data.
-- **Read-capability enforcement is active.** `READ_SCREENSHOT` and `READ_CAPTURE_CONTEXT` are defined, default-enabled, and enforced by the corresponding endpoints. (`READ_REPO_CONTEXT` is defined but currently unused as no endpoints require it.)
+- **Read-capability enforcement is active.** `/status`, `/screenshot`,
+  `/screenshots/save`, `/resolve`, `/inspect`,
+  `/highlight/resolve`, `/highlight/capture` require a bearer token and the
+  matching capability (`READ_SCREENSHOT` / `READ_CAPTURE_CONTEXT`); missing or
+  wrong credentials return 401/403 (negative tests in
+  `tests/test_security.py`). `/status` returns only a minimal payload unless a
+  valid token is presented, so hostname/IP/platform stay private.
+- **Static file serving of `/screenshots/<file>`** remains reachable to local
+  callers; Agentation fetches image URLs through short-lived scoped share
+  tokens for the annotation flow.
+- `READ_REPO_CONTEXT` is defined but currently unused as no endpoints require it.

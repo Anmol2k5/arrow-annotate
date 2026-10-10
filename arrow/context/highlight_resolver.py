@@ -244,7 +244,7 @@ def _get_uia_info_at_point(cx: int, cy: int, pid: int | None = None
 
         # Try to get Value pattern (often contains URLs in browser address bars)
         try:
-            value = element.GetPatternValue("Value")
+            value = element.GetPatternValue("Value")  # type: ignore[attr-defined]
             if value:
                 info["value"] = value
         except Exception:
@@ -252,7 +252,7 @@ def _get_uia_info_at_point(cx: int, cy: int, pid: int | None = None
 
         # Try LegacyIAccessible for additional info
         try:
-            default_action = element.GetPatternValue("LegacyIAccessible")
+            default_action = element.GetPatternValue("LegacyIAccessible")  # type: ignore[attr-defined]
             if default_action:
                 info["legacy"] = str(default_action)
         except Exception:
@@ -282,7 +282,7 @@ def _focusable_element_at(cx: int, cy: int) -> Any | None:
         # Walk up to find an interactive ancestor
         if element.ControlTypeName not in ("Pane", "Window", "Custom"):
             return element
-        parent = element
+        parent: Any = element
         for _ in range(10):
             try:
                 parent = parent.GetParentControl()
@@ -477,7 +477,13 @@ def _sampled_points(x: int, y: int, w: int, h: int) -> list[tuple[int, int]]:
     points.append((x + 1, y + 1))
 
     seen: set[str] = set()
-    return [p for p in points if seen.add(f"{p[0]}:{p[1]}") is None]
+    unique: list[tuple[int, int]] = []
+    for p in points:
+        key = f"{p[0]}:{p[1]}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +617,7 @@ class HighlightResolver:
                 f_name = focused.Name or ""
                 f_value = ""
                 try:
-                    f_value = focused.GetPatternValue("Value") or ""
+                    f_value = focused.GetPatternValue("Value") or ""  # type: ignore[attr-defined]
                 except Exception:
                     pass
                 url_str = f_value or f_name

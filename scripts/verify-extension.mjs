@@ -31,17 +31,27 @@ if (existsSync(join(extDir, "manifest.json"))) {
       failures.push("background.service_worker must be a string or array");
     }
     const cs = manifest.content_scripts ?? [];
-    if (!cs.length) failures.push("no content_scripts declared");
     for (const entry of cs) {
       for (const f of entry.js ?? []) mustExist(`browser_extension/${f}`);
       for (const f of entry.css ?? []) mustExist(`browser_extension/${f}`);
+    }
+    // No declarative all-site injection: the content script must be injected
+    // on demand (chrome.scripting + optional host permission), never declared
+    // for http://*/* or https://*/*.
+    if (cs.length) failures.push(
+      "declarative content_scripts found — injection must be on demand (see chrome.scripting)"
+    );
+    const optHosts = manifest.optional_host_permissions ?? [];
+    if (!optHosts.length && !(manifest.permissions ?? []).includes("scripting")) {
+      failures.push("on-demand injection requires scripting permission or optional_host_permissions");
     }
     if (typeof sw === "string") mustExist(`browser_extension/${sw}`);
     if (Array.isArray(sw)) for (const f of sw) mustExist(`browser_extension/${f}`);
     if (manifest.icons) for (const p of Object.values(manifest.icons)) mustExist(`browser_extension/${p}`);
 
     // Permission scoping: the extension must not request all_urls or broad
-    // host access; content-script matches are limited to http/https.
+    // host access; optional host permissions (on-demand injection) may cover
+    // http/https but never file:, chrome: or <all_urls>.
     const permissions = manifest.permissions ?? [];
     for (const p of permissions) {
       if (!["activeTab", "storage", "tabs", "scripting"].includes(p)) {
@@ -57,11 +67,9 @@ if (existsSync(join(extDir, "manifest.json"))) {
         failures.push(`host permission must be loopback-only: ${h}`);
       }
     }
-    for (const entry of manifest.content_scripts ?? []) {
-      for (const m of entry.matches ?? []) {
-        if (m === "<all_urls>" || m.startsWith("file:") || m.startsWith("chrome")) {
-          failures.push(`overly broad content-script match: ${m}`);
-        }
+    for (const h of optHosts) {
+      if (h === "<all_urls>" || h.startsWith("file:") || h.startsWith("chrome")) {
+        failures.push(`overly broad optional host permission: ${h}`);
       }
     }
   } catch (e) {

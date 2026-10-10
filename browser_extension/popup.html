@@ -14,7 +14,8 @@
     h3 { margin: 0 0 2px; font-size: 14px; color: #0f172a; }
     .sub { font-size: 11px; color: #64748b; margin-bottom: 10px; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; font-size: 12px; }
-    input[type="password"] {
+    input[type="password"],
+    input[type="text"] {
       width: 100%;
       box-sizing: border-box;
       padding: 7px;
@@ -63,6 +64,8 @@
 
   <label for="token">Local bearer token</label>
   <input type="password" id="token" placeholder="Paste token…" autocomplete="off" />
+  <label for="wsurl">Bridge URL</label>
+  <input type="text" id="wsurl" placeholder="ws://127.0.0.1:5002" autocomplete="off" />
   <div class="row">
     <button id="save">Save &amp; connect</button>
     <button id="load">Load from file…</button>
@@ -70,14 +73,22 @@
   <div class="row">
     <button id="retry">Reconnect now</button>
   </div>
+  <div class="row">
+    <button id="allow">Allow access to this site</button>
+  </div>
 
   <div class="hint">
     Find the token in <code>~/.arrow/token</code> (or <code>%ARROW_HOME%\token</code>)
     on the machine running Arrow Annotate. The token never leaves your browser
     storage and is only sent to <code>127.0.0.1</code>.
     <br /><br />
-    This extension only reads page structure on <code>http</code>/<code>https</code>
-    pages when the desktop app asks it to — it never reads page content on its own.
+    Leave the bridge URL at its default unless you changed
+    <code>ARROW_WS_PORT</code> in the desktop app's <code>.env</code>;
+    only loopback <code>ws://</code> addresses are accepted.
+    <br /><br />
+    This extension has no standing access to web pages. It reads page structure
+    only when the desktop app asks it to, and only on sites you explicitly allow
+    with the button above.
   </div>
 
   <input type="file" id="file" hidden />

@@ -13,11 +13,13 @@ import logging
 import os
 from typing import Optional
 
+from arrow.core.config import resolve_home
+
 log = logging.getLogger("arrow.storage.settings")
 
 
 def config_dir() -> str:
-    base = os.environ.get("ARROW_HOME") or os.path.join(os.path.expanduser("~"), ".arrow")
+    base = resolve_home()
     os.makedirs(base, exist_ok=True)
     return base
 

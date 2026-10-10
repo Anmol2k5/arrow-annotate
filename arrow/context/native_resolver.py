@@ -25,7 +25,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
 
@@ -176,7 +176,7 @@ def _default_uia_provider(x: int, y: int) -> Optional[NativeElementContext]:  # 
     # Walk up for parent hierarchy + top-level window title.
     parents: list[str] = []
     window_title: Optional[str] = None
-    node = control
+    node: Any = control
     for _ in range(_MAX_PARENTS + 4):
         try:
             node = node.GetParentControl()
@@ -205,7 +205,7 @@ def _default_uia_provider(x: int, y: int) -> Optional[NativeElementContext]:  # 
         "is_offscreen": _safe(lambda: bool(control.IsOffscreen)),
         "is_keyboard_focusable": _safe(lambda: bool(control.IsKeyboardFocusable)),
     }
-    value = _safe(lambda: control.GetValuePattern().Value)
+    value = _safe(lambda: control.GetValuePattern().Value)  # type: ignore[attr-defined]
     if value:
         accessibility["value"] = value
     accessibility = {k: v for k, v in accessibility.items() if v is not None}

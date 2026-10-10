@@ -9,9 +9,11 @@ import socket
 import pytest
 
 from arrow.capture.session import CaptureState, SessionManager
+from arrow.core.config import reset_config_cache
 from arrow.providers.agentation import (
     AgentationClient,
     AgentationError,
+    client_from_config,
     pick_session_id,
     send_capture_annotation,
 )
@@ -119,6 +121,25 @@ def test_add_annotation_requires_core_fields():
     with pytest.raises(AgentationError) as excinfo:
         client.add_annotation("sess-1", {"comment": "x"})
     assert "element" in str(excinfo.value)
+
+
+def test_client_from_config_uses_configured_url(monkeypatch):
+    """ARROW_AGENTATION_URL must reach the client, not just the config object."""
+    monkeypatch.setenv("ARROW_AGENTATION_URL", "http://127.0.0.1:4748")
+    reset_config_cache()
+    try:
+        assert client_from_config().base_url == "http://127.0.0.1:4748"
+    finally:
+        reset_config_cache()
+
+
+def test_client_from_config_defaults_to_agentation_port(monkeypatch):
+    monkeypatch.delenv("ARROW_AGENTATION_URL", raising=False)
+    reset_config_cache()
+    try:
+        assert client_from_config().base_url == "http://127.0.0.1:4747"
+    finally:
+        reset_config_cache()
 
 
 # ---------------------------------------------------------------------------
