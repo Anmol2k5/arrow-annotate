@@ -2,7 +2,7 @@ import math
 import time
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -28,12 +28,13 @@ class StrokePoint:
 class Stroke:
     """One freehand stroke; locked strokes form the persistent annotation scene."""
 
-    __slots__ = ("role", "points", "locked")
+    __slots__ = ("role", "points", "locked", "committed_at")
 
     def __init__(self, role: str):
         self.role = role  # "source" | "destination"
         self.points: List[StrokePoint] = []
         self.locked = False
+        self.committed_at: Optional[float] = None
 
 
 def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optional[dict]:
@@ -77,11 +78,14 @@ class SelectionOverlay(QWidget):
     tail fade only applies to the stroke currently being drawn.
     """
 
-    # Keep a soft luminous trail after mouse release. The actual locked
-    # annotations remain visible so their source/destination roles are clear.
-    TRAIL_SECONDS = 3.2
+    # TipTour-inspired focus gesture timing (1.6s hold + 7s fade).
+    # Glow fades, while source/destination semantics stay visible until capture.
+    TRAIL_SECONDS = 3.2  # Live points age out as the pointer moves.
+    FOCUS_HOLD_SECONDS = 1.6
+    FOCUS_FADE_SECONDS = 7.0
     SUBDIVISION = 7
-    FADE_BUCKETS = 24
+    FADE_BUCKETS = 28
+    MAX_VISIBLE_TRAIL_POINTS = 220
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
 
@@ -232,6 +236,7 @@ class SelectionOverlay(QWidget):
             self._is_drawing = False
             if self._current_stroke is not None:
                 self._current_stroke.locked = True
+                self._current_stroke.committed_at = time.time()
                 self._strokes.append(self._current_stroke)
                 self._current_stroke = None
             self.update()
@@ -306,56 +311,115 @@ class SelectionOverlay(QWidget):
             trail.append((last.point, alpha_of(last)))
         return trail
 
+    @staticmethod
+    def _focus_opacity(now: float, committed_at: Optional[float]) -> float:
+        """Hold a finished gesture briefly, then linearly fade to zero."""
+        if committed_at is None:
+            return 0.0
+        age = max(0.0, now - committed_at)
+        if age <= SelectionOverlay.FOCUS_HOLD_SECONDS:
+            return 1.0
+        fraction = (age - SelectionOverlay.FOCUS_HOLD_SECONDS) / SelectionOverlay.FOCUS_FADE_SECONDS
+        return max(0.0, 1.0 - fraction)
+
+    def _focus_trail(self, points: List[StrokePoint], now: float, committed_at: Optional[float]) -> List[Tuple[QPointF, float]]:
+        """A committed trail fades globally; its tail is naturally softer."""
+        opacity = self._focus_opacity(now, committed_at)
+        if opacity <= 0.0:
+            return []
+        # The full raw stroke remains available for the screenshot/gesture
+        # contract; only the temporary glow is capped to bound frame cost.
+        smoothed = self._build_trail(points[-self.MAX_VISIBLE_TRAIL_POINTS:], now, 1e9)
+        last = max(1, len(smoothed) - 1)
+        return [
+            (pt, min(1.0, ((i / last) ** 1.8) * opacity))
+            for i, (pt, _alpha) in enumerate(smoothed)
+        ]
+
     def _stroke_trail(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
                       rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
-        """Render a smooth, fading path with connected, rounded segments.
+        """Draw layered highlighter bands with flat caps instead of bead-like dots.
 
-        Each adjacent point pair is assigned to one opacity bucket. Subpaths
-        are explicitly separated so old and new parts never get joined by
-        an accidental straight line when they occupy the same bucket.
+        TipTour draws smooth continuous paths with many trimmed opacity bands.
+        In Qt we use smoothed, short subpaths in alpha buckets. Flat caps make
+        neighboring segments abut cleanly rather than stacking round endcaps.
         """
         if not trail:
             return
 
         r, g, b = rgb
-        cr, cg, cb = core_rgb
         if len(trail) == 1:
             point, alpha = trail[0]
             if alpha > 0.01:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(cr, cg, cb, int(240 * alpha)))
-                painter.drawEllipse(point, 3.5, 3.5)
+                painter.setBrush(QColor(r, g, b, int(170 * alpha)))
+                painter.drawEllipse(point, 6.5, 6.5)
             return
 
         buckets = [QPainterPath() for _ in range(self.FADE_BUCKETS)]
         occupied = set()
         for (prev_pt, prev_alpha), (pt, alpha) in zip(trail, trail[1:]):
-            midpoint_alpha = (prev_alpha + alpha) * 0.5
-            if midpoint_alpha <= 0.01:
+            midpoint = (prev_alpha + alpha) * 0.5
+            if midpoint <= 0.008:
                 continue
-            index = min(self.FADE_BUCKETS - 1, int(midpoint_alpha * self.FADE_BUCKETS))
-            path = buckets[index]
-            path.moveTo(prev_pt)
-            path.lineTo(pt)
+            index = min(self.FADE_BUCKETS - 1, int(midpoint * self.FADE_BUCKETS))
+            bucket = buckets[index]
+            bucket.moveTo(prev_pt)
+            bucket.lineTo(pt)
             occupied.add(index)
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for index in sorted(occupied):
             alpha = (index + 0.5) / self.FADE_BUCKETS
             path = buckets[index]
-            for width, opacity, color in (
-                (19.0, 43, (r, g, b)),
-                (9.0, 115, (r, g, b)),
-                (3.5, 230, (cr, cg, cb)),
-            ):
+            # Wide soft halo / middle bloom / saturated highlighter core.
+            # QPainter lacks SwiftUI's per-layer gaussian blur; low-opacity
+            # outer passes keep the effect lightweight and native on Windows.
+            for width, opacity in ((42.0, 27), (26.0, 65), (14.0, 153)):
                 painter.setPen(QPen(
-                    QColor(*color, int(opacity * alpha)),
+                    QColor(r, g, b, int(opacity * alpha)),
                     width,
                     Qt.PenStyle.SolidLine,
-                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenCapStyle.FlatCap,
                     Qt.PenJoinStyle.RoundJoin,
                 ))
                 painter.drawPath(path)
+
+    def _draw_focus_outline(self, painter: QPainter, stroke: Stroke, now: float):
+        """Quiet rounded focus frame and corner brackets, after TipTour's detector UX."""
+        if len(stroke.points) < 2:
+            return
+        xs = [p.point.x() for p in stroke.points]
+        ys = [p.point.y() for p in stroke.points]
+        width, height = max(xs) - min(xs), max(ys) - min(ys)
+        if width < 14.0 or height < 14.0:
+            return
+        rect = QRectF(min(xs) - 9, min(ys) - 9, width + 18, height + 18)
+        rgb = SOURCE_RGB if stroke.role == "source" else DEST_RGB
+        pulse = 0.5 + 0.5 * math.sin(now * 2.2)
+        painter.setBrush(QColor(*rgb, 9))
+        painter.setPen(QPen(QColor(*rgb, int(17 + 10 * pulse)), 5.0))
+        painter.drawRoundedRect(rect, 8.0, 8.0)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(*rgb, 110), 1.0))
+        painter.drawRoundedRect(rect, 8.0, 8.0)
+
+        left, top = rect.left(), rect.top()
+        right, bottom = rect.right(), rect.bottom()
+        bracket = min(18.0, max(8.0, min(rect.width(), rect.height()) * 0.24))
+        corner_path = QPainterPath()
+        for start, elbow, end in (
+            ((left, top + bracket), (left, top), (left + bracket, top)),
+            ((right - bracket, top), (right, top), (right, top + bracket)),
+            ((right, bottom - bracket), (right, bottom), (right - bracket, bottom)),
+            ((left + bracket, bottom), (left, bottom), (left, bottom - bracket)),
+        ):
+            corner_path.moveTo(*start)
+            corner_path.lineTo(*elbow)
+            corner_path.lineTo(*end)
+        painter.setPen(QPen(QColor(*rgb, 200), 2.0, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPath(corner_path)
 
     def _draw_particles(self, painter: QPainter, trail: List[Tuple[QPointF, float]], rgb: Tuple[int, int, int]):
         """Draw subtle glowing sparkles along the fading comet tail as shown in the gesture UI."""
@@ -519,12 +583,22 @@ class SelectionOverlay(QWidget):
 
         locked = [s for s in self._strokes if s.locked and len(s.points) >= 1]
 
-        # Persistent annotation scene: both strokes at full opacity.
+        # Subdued semantic strokes and pulsing focus outlines remain visible
+        # for source/destination, independently of the temporary blue glow.
         for s in locked:
             rgb = SOURCE_RGB if s.role == "source" else DEST_RGB
-            core = SOURCE_CORE if s.role == "source" else DEST_CORE
-            trail = self._build_trail(s.points, now, trail_seconds=1e9)
-            self._stroke_trail(painter, trail, rgb, core)
+            semantic_path = QPainterPath()
+            if s.points:
+                semantic_path.moveTo(s.points[0].point)
+                for point in s.points[1:]:
+                    semantic_path.lineTo(point.point)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor(*rgb, 95), 2.5,
+                                    Qt.PenStyle.SolidLine,
+                                    Qt.PenCapStyle.RoundCap,
+                                    Qt.PenJoinStyle.RoundJoin))
+                painter.drawPath(semantic_path)
+            self._draw_focus_outline(painter, s, now)
             self._draw_marker(painter, s, rgb)
 
         # Connecting arrow: source → destination.
@@ -537,17 +611,19 @@ class SelectionOverlay(QWidget):
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
 
-        # After release the visual glow lingers and fades; permanent semantic
-        # annotations above it keep their red/green source/destination meaning.
+        # TipTour-style hold + slow fade after release. Source/destination
+        # focus outlines above remain until the user finishes capture.
         for stroke in locked:
-            if stroke.points and now - stroke.points[-1].timestamp < self.TRAIL_SECONDS:
-                afterglow = self._build_trail(stroke.points, now, self.TRAIL_SECONDS)
+            if stroke.points:
+                afterglow = self._focus_trail(stroke.points, now, stroke.committed_at)
                 self._stroke_trail(painter, afterglow, ACTIVE_RGB, ACTIVE_CORE)
-                self._draw_particles(painter, afterglow, ACTIVE_RGB)
 
         # Active stroke: same glow, with a crisp white-blue pointer at the tip.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 1:
-            trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
+            trail = self._build_trail(
+                self._current_stroke.points[-self.MAX_VISIBLE_TRAIL_POINTS:],
+                now, self.TRAIL_SECONDS
+            )
             self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
             self._draw_particles(painter, trail, ACTIVE_RGB)
             self._draw_pointer_head(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
