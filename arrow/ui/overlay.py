@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import QApplication, QWidget
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
 DEST_RGB = (34, 197, 94)         # Green
-ACTIVE_RGB = (244, 114, 182)      # Rose Pink Neon
+ACTIVE_RGB = (65, 153, 255)       # Electric blue, matching the pointer trail
 SOURCE_CORE = (255, 214, 214)
 DEST_CORE = (214, 255, 228)
-ACTIVE_CORE = (255, 245, 248)    # Pure White-Pink Core
+ACTIVE_CORE = (231, 246, 255)    # Ice-blue / white leading edge
 
 MARKER_LABELS = {"source": "Current", "destination": "Move here"}
 
@@ -77,12 +77,11 @@ class SelectionOverlay(QWidget):
     tail fade only applies to the stroke currently being drawn.
     """
 
-    # How long the comet tail survives after being drawn (seconds).
-    TRAIL_SECONDS = 2.0
-    # Subdivision steps per raw segment for Catmull-Rom smoothing.
-    SUBDIVISION = 6
-    # How many alpha buckets the fading tail is split into when stroking.
-    FADE_BUCKETS = 14
+    # Keep a soft luminous trail after mouse release. The actual locked
+    # annotations remain visible so their source/destination roles are clear.
+    TRAIL_SECONDS = 3.2
+    SUBDIVISION = 7
+    FADE_BUCKETS = 24
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
 
@@ -161,6 +160,7 @@ class SelectionOverlay(QWidget):
         self._is_drawing = False
         self.unsetCursor()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()  # Remove the drawing surface before the raw screenshot.
 
         def _mock(result):
             class MockResult:
@@ -215,13 +215,12 @@ class SelectionOverlay(QWidget):
         if self._current_stroke.points:
             last_pt = self._current_stroke.points[-1].point
             dist = math.hypot(pt.x() - last_pt.x(), pt.y() - last_pt.y())
-            if dist < 2.0:
+            if dist < 1.5:
                 return
-            # Light smoothing only: damps high-frequency mouse jitter without
-            # dragging the stroke visibly behind the cursor. Heavy blending
-            # causes a rubber-band feel; Catmull-Rom handles shape smoothing.
-            pt = QPointF(last_pt.x() * 0.15 + pt.x() * 0.85,
-                         last_pt.y() * 0.15 + pt.y() * 0.85)
+            # Gentle low-pass filtering removes mouse jitter without creating
+            # a noticeable rubber-band delay. The spline handles curvature.
+            pt = QPointF(last_pt.x() * 0.24 + pt.x() * 0.76,
+                         last_pt.y() * 0.24 + pt.y() * 0.76)
 
         self._current_stroke.points.append(StrokePoint(pt))
         self.update()
@@ -282,7 +281,11 @@ class SelectionOverlay(QWidget):
         trail: List[Tuple[QPointF, float]] = []
 
         def alpha_of(p: StrokePoint) -> float:
-            return max(0.0, 1.0 - (now - p.timestamp) / trail_seconds)
+            # Ease the opacity towards zero, rather than dropping abruptly
+            # when the stroke locks. All points naturally expire with age.
+            elapsed = max(0.0, now - p.timestamp)
+            remaining = max(0.0, 1.0 - elapsed / trail_seconds)
+            return remaining ** 1.35
 
         steps = self.SUBDIVISION
         for i in range(n - 1):
@@ -303,72 +306,66 @@ class SelectionOverlay(QWidget):
 
     def _stroke_trail(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
                       rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
-        """Stroke a trail in alpha buckets so the fade is smooth and cheap.
+        """Render a smooth, fading path with connected, rounded segments.
 
-        Each bucket is one QPainterPath stroked three times (glow layers),
-        which keeps the frame cost low even for long strokes. Locked strokes
-        (uniform alpha ~1) land in a single full-opacity bucket.
+        Each adjacent point pair is assigned to one opacity bucket. Subpaths
+        are explicitly separated so old and new parts never get joined by
+        an accidental straight line when they occupy the same bucket.
         """
         if not trail:
             return
 
-        if len(trail) == 1:
-            pt, a = trail[0]
-            r, g, b = rgb
-            cr, cg, cb = core_rgb
-            painter.setBrush(QColor(cr, cg, cb, int(255 * a)))
-            painter.setPen(QPen(QColor(r, g, b, int(180 * a)), 4))
-            painter.drawEllipse(pt, 6, 6)
-            return
-
         r, g, b = rgb
         cr, cg, cb = core_rgb
-        buckets = self.FADE_BUCKETS
-        for bucket in range(buckets):
-            hi = 1.0 - bucket / buckets          # newer edge of the bucket
-            lo = 1.0 - (bucket + 1) / buckets    # older edge of the bucket
-            bucket_alpha = (lo + hi) / 2.0       # midpoint: accurate, smooth fade
+        if len(trail) == 1:
+            point, alpha = trail[0]
+            if alpha > 0.01:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(cr, cg, cb, int(240 * alpha)))
+                painter.drawEllipse(point, 3.5, 3.5)
+            return
 
-            path = QPainterPath()
-            started = False
-            for pt, a in trail:
-                if lo <= a <= hi:
-                    if not started:
-                        path.moveTo(pt)
-                        started = True
-                    else:
-                        path.lineTo(pt)
-            if not started:
+        buckets = [QPainterPath() for _ in range(self.FADE_BUCKETS)]
+        occupied = set()
+        for (prev_pt, prev_alpha), (pt, alpha) in zip(trail, trail[1:]):
+            midpoint_alpha = (prev_alpha + alpha) * 0.5
+            if midpoint_alpha <= 0.01:
                 continue
+            index = min(self.FADE_BUCKETS - 1, int(midpoint_alpha * self.FADE_BUCKETS))
+            path = buckets[index]
+            path.moveTo(prev_pt)
+            path.lineTo(pt)
+            occupied.add(index)
 
-            outer = QPen(QColor(r, g, b, int(45 * bucket_alpha)), 22,
-                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                         Qt.PenJoinStyle.RoundJoin)
-            inner = QPen(QColor(r, g, b, int(120 * bucket_alpha)), 11,
-                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                         Qt.PenJoinStyle.RoundJoin)
-            core = QPen(QColor(cr, cg, cb, int(255 * bucket_alpha)), 5,
-                        Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                        Qt.PenJoinStyle.RoundJoin)
-
-            painter.setPen(outer)
-            painter.drawPath(path)
-            painter.setPen(inner)
-            painter.drawPath(path)
-            painter.setPen(core)
-            painter.drawPath(path)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for index in sorted(occupied):
+            alpha = (index + 0.5) / self.FADE_BUCKETS
+            path = buckets[index]
+            for width, opacity, color in (
+                (19.0, 43, (r, g, b)),
+                (9.0, 115, (r, g, b)),
+                (3.5, 230, (cr, cg, cb)),
+            ):
+                painter.setPen(QPen(
+                    QColor(*color, int(opacity * alpha)),
+                    width,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                ))
+                painter.drawPath(path)
 
     def _draw_particles(self, painter: QPainter, trail: List[Tuple[QPointF, float]], rgb: Tuple[int, int, int]):
         """Draw subtle glowing sparkles along the fading comet tail as shown in the gesture UI."""
         r, g, b = rgb
         for i, (pt, a) in enumerate(trail):
-            if a < 0.05 or i % 2 != 0:
+            if a < 0.12 or i % 9 != 0:
                 continue
-            ox = (math.sin(i * 12.9898 + pt.x()) * 16.0)
-            oy = (math.cos(i * 78.233 + pt.y()) * 16.0)
-            sz = 1.2 + (math.sin(i * 1.5) + 1.0) * 1.0
+            ox = math.sin(i * 12.9898 + pt.x()) * 7.0
+            oy = math.cos(i * 78.233 + pt.y()) * 7.0
+            sz = 0.9 + (math.sin(i * 1.5) + 1.0) * 0.5
             particle_pt = QPointF(pt.x() + ox, pt.y() + oy)
-            alpha = int(160 * a * (0.3 + 0.7 * math.sin(i * 2.5)))
+            alpha = int(75 * a * (0.6 + 0.4 * math.sin(i * 2.5)))
             if alpha <= 0:
                 continue
             painter.setBrush(QColor(r, g, b, alpha))
@@ -538,7 +535,15 @@ class SelectionOverlay(QWidget):
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
 
-        # Live stroke: fading comet tail with particle sparkles & white arrowhead.
+        # After release the visual glow lingers and fades; permanent semantic
+        # annotations above it keep their red/green source/destination meaning.
+        for stroke in locked:
+            if stroke.points and now - stroke.points[-1].timestamp < self.TRAIL_SECONDS:
+                afterglow = self._build_trail(stroke.points, now, self.TRAIL_SECONDS)
+                self._stroke_trail(painter, afterglow, ACTIVE_RGB, ACTIVE_CORE)
+                self._draw_particles(painter, afterglow, ACTIVE_RGB)
+
+        # Active stroke: same glow, with a crisp white-blue pointer at the tip.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 1:
             trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
             self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
