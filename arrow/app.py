@@ -155,12 +155,21 @@ def main():
         session = session_manager.active_session
         if not session or session.capture_id != capture_id:
             return
-        log.error("Voice error: %s", err)
+        log.warning("Voice recognition issue: %s", err)
+        # An unclear phrase is not a request to finish/capture the entire
+        # screen. Let the user continue drawing and finish explicitly.
         if is_annotating:
-            toggle_annotation()
+            message = (
+                "Voice unclear — keep drawing, then press Ctrl+Shift+Space"
+                if "understand" in err.lower()
+                else "Voice unavailable — finish with Ctrl+Shift+Space"
+            )
+            notch.set_status(message)
 
     voice.result_ready.connect(on_voice_result)
     voice.error.connect(on_voice_error)
+    # Reflect the real microphone state, including timeouts and cancellation.
+    voice.listening_changed.connect(notch.set_recording)
 
     def on_selection(result):
         """Full capture flow when overlay selection completes."""
