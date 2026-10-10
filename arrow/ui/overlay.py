@@ -583,6 +583,12 @@ class SelectionOverlay(QWidget):
 
         locked = [s for s in self._strokes if s.locked and len(s.points) >= 1]
 
+        # Glow is layered behind the selected-element geometry, matching
+        # TipTour's non-obscuring highlighter treatment.
+        for stroke in locked:
+            afterglow = self._focus_trail(stroke.points, now, stroke.committed_at)
+            self._stroke_trail(painter, afterglow, ACTIVE_RGB, ACTIVE_CORE)
+
         # Subdued semantic strokes and pulsing focus outlines remain visible
         # for source/destination, independently of the temporary blue glow.
         for s in locked:
@@ -610,13 +616,6 @@ class SelectionOverlay(QWidget):
                 c2 = stroke_center([p.point for p in dst.points])
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
-
-        # TipTour-style hold + slow fade after release. Source/destination
-        # focus outlines above remain until the user finishes capture.
-        for stroke in locked:
-            if stroke.points:
-                afterglow = self._focus_trail(stroke.points, now, stroke.committed_at)
-                self._stroke_trail(painter, afterglow, ACTIVE_RGB, ACTIVE_CORE)
 
         # Active stroke: same glow, with a crisp white-blue pointer at the tip.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 1:
