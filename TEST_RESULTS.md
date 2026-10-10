@@ -1,20 +1,20 @@
 # Test Results
 
-Date: 2026-10-08
+Date: 2026-10-10
 Branch: `fix/arrow-annotate-prelaunch`
 
 ## Python suite
 
 ```
-308 passed, 1 warning in 19.81s
+317 passed, 1 warning in 21.56s
 ```
 
-- The single warning is pre-existing (pytest config deprecation) and does
-  not affect results.
-- New/major suites in this effort: `test_config`, `test_share_tokens`,
-  `test_screenshot_upload`, `test_crop_geometry`, `test_threading`,
-  `test_voice_input`, `test_agentation`, `test_notch_status`,
-  `test_hotkey`.
+- The single warning is a pre-existing `mss.mss` deprecation in
+  `arrow/server/server.py` and does not affect results.
+- Baseline before this pass (after fast-forward to `70b5d8c`): 314 passed.
+- New/updated tests in this pass: `test_trail_fade` (layer ordering,
+  continuous band painting along a curve), `test_agentation` (offline
+  completes session; `complete_if_active` ignores superseded sessions).
 
 ## Static checks
 
@@ -40,6 +40,19 @@ GATES.md: 17 met / 1 unmet
   met:   G0–G16
   unmet: G17 manual GUI smoke run → requires a human on a real desktop
 ```
+
+## Manual Windows validation (required, not automated)
+
+Not executed in this environment (headless CI-style run). Requires a human
+on an interactive Windows desktop:
+
+- Scenario A/B: trail smoothness, fade after release (visual).
+- Scenario C: focus outline alignment over real UI elements.
+- Scenario D: screenshot readback has no overlay veil (overlay is hidden
+  before capture; verified by code path, not pixels).
+- Scenario E: notch expand/collapse feel.
+- Scenario F: live microphone voice path (fakes cover logic only).
+- Scenario G: Agentation stopped → amber "offline — capture saved" status.
 
 ## Regression proof (voice race)
 

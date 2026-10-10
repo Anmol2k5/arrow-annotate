@@ -15,13 +15,15 @@ Arrow Annotate uses its **own PyQt6 drawing code**; no Swift/AppKit implementati
 ## Windows/PyQt6 adaptation
 
 - Screenwide Qt overlay, with freehand strokes captured in virtual-desktop coordinates.
-- Active gesture uses Catmull–Rom interpolation and sparse blue particles.
-- Three Qt painter passes (42 / 26 / 14 px) approximate the reference's halo, bloom and saturated marker core.
-- Qt opacity buckets use **flat caps** to avoid bead-like junctions common with round-capped independent segments. Curved input geometry is preserved using spline subdivision.
-- Committed gesture: full opacity for 1.6 seconds after release, then fades over 7 seconds while the overlay remains open. Finishing the capture closes the overlay immediately to keep it out of the screenshot. A later readback of the screenshot should show persistent source/destination semantics rather than the transient glow.
-- Source/destination focus regions gain a subtle pulsing rounded outline and corner brackets (red and green semantic roles retained).
-- The live/committed glow buffer is capped to 220 raw samples for rendering; all raw points remain available to the gesture/capture pipeline.
-- The 60fps animation timer runs only while the overlay is visible.
+- Active gesture uses Catmull–Rom interpolation into a densified sample stream (bounded to 220 raw points for rendering; all raw points remain available to the capture pipeline).
+- **Continuous band rendering** (the TipTour anti-bead strategy): the densified trail is sliced into ordered tail→head opacity bands; each band is a single polyline sharing endpoints with its neighbours and is stroked once per glow layer with **flat caps**. This approximates TipTour's "one continuous path, trimmed into bands" approach — Qt has no path trimming — and avoids the stacked round-cap beads of per-segment rendering.
+- Three glow layers match the reference proportions: outer halo 54 px @ 0.11, middle bloom 32 px @ 0.26, saturated core 18 px @ 0.72, using the electric-blue palette (`#4F8EF7` core, `#E2F3FF` leading tip).
+- Opacity ramp: `progress ^ 1.8` (bright head, soft dissolving tail), monotonic along the path.
+- Committed gesture: full opacity for 1.6 seconds after release, then fades over 7 seconds while the overlay remains open. Finishing the capture closes the overlay immediately to keep it out of the screenshot. Persistent source/destination semantics remain after the transient glow fades.
+- Source/destination focus regions keep a subtle pulsing rounded outline (~0.35 Hz) and corner brackets (red/green semantic roles retained). Marker labels read "Current" / "Move here".
+- The overlay backdrop is a mostly transparent veil (alpha 32) — the desktop stays fully legible while drawing; the guide pill uses the electric-blue accent. No full-screen dot grid (it cost thousands of `drawPoint` calls per frame).
+- The 60 fps animation timer runs only while something is actually animating (live stroke or pulsing focus outline); an empty idle overlay skips repaints.
+- Compact pointer head: white-blue core with a soft electric-blue halo (18 px), no oversized arrowhead.
 
 ## Verification
 
@@ -33,6 +35,6 @@ Run:
 .\.venv\Scripts\python.exe -m mypy arrow
 ```
 
-Manual acceptance: draw a long curved gesture, release the mouse, confirm a soft electric-blue highlighter fades slowly; source/destination marks and focus brackets remain visible until the capture is completed. Verify that screenshot content and multi-monitor geometry remain correct.
+Manual acceptance: draw a long curved gesture, release the mouse, confirm a soft electric-blue highlighter fades slowly; the desktop remains clearly visible while drawing; source/destination marks and focus brackets remain visible until the capture is completed. Verify that screenshot content and multi-monitor geometry remain correct.
 
-**Limitation:** Visual fidelity, actual frame rate and anti-aliasing on the Windows desktop require manual testing. CI verifies deterministic rendering math and that the painter does not crash in offscreen tests.
+**Limitation:** Visual fidelity, actual frame rate and anti-aliasing on the Windows desktop require manual testing. CI verifies deterministic rendering math, band continuity along curves, and that the painter does not crash in offscreen tests.

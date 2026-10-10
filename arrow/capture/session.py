@@ -200,6 +200,23 @@ class SessionManager:
                 logger.debug("fail_if_active: session already terminal")
             return True
 
+    def complete_if_active(self, capture_id: Optional[str]) -> bool:
+        """Mark the session COMPLETED if capture_id is still current.
+
+        Used when the local capture pipeline succeeded but an optional
+        downstream step (e.g. Agentation sync) failed: the capture itself is
+        fine, so the session must not be failed.
+        """
+        with self._lock:
+            if not self.is_active(capture_id):
+                return False
+            try:
+                self._transition_locked(CaptureState.COMPLETED)
+            except ValueError:
+                logger.debug("complete_if_active: session already terminal")
+                return False
+            return True
+
     def clear_session(self) -> None:
         """Clears the active session references."""
         with self._lock:

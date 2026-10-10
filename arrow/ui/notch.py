@@ -859,6 +859,7 @@ class ScreenshotsView(QWidget):
         row2.addStretch()
 
         copy_btn = QPushButton("📋 Copy all")
+        copy_btn.setToolTip("Copy all capture instructions")
         self._copy_btn = copy_btn
         copy_btn.setFixedHeight(32)
         copy_btn.setStyleSheet("""
@@ -877,6 +878,7 @@ class ScreenshotsView(QWidget):
 
         trash_btn = QPushButton("🗑️")
         trash_btn.setFixedSize(32, 32)
+        trash_btn.setToolTip("Delete all captures")
         trash_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -1339,6 +1341,8 @@ class DynamicNotch(QWidget):
         lowered = text.lower()
         if "fail" in lowered or "error" in lowered or "unavailable" in lowered:
             foreground, background = "#FFB6BA", "#331C29"
+        elif "offline" in lowered:
+            foreground, background = "#FCD34D", "#2A2310"
         elif "sent" in lowered or "complete" in lowered or "success" in lowered:
             foreground, background = "#A5EECF", "#102E29"
         else:

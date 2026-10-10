@@ -28,6 +28,49 @@ def test_blue_pointer_palette():
     assert ACTIVE_RGB[2] > ACTIVE_RGB[1]
 
 
+def test_trail_layers_are_ordered_halo_to_core():
+    """Outer halo is widest/dimmest; the core is narrowest and most opaque."""
+    layers = SelectionOverlay.TRAIL_LAYERS
+    widths = [w for w, _ in layers]
+    opacities = [o for _, o in layers]
+    assert widths == sorted(widths, reverse=True)
+    assert opacities == sorted(opacities)
+    assert opacities[-1] >= 0.6, "core stroke must stay clearly visible"
+
+
+def test_trail_bands_paint_continuously_along_curve():
+    """Every segment of a curved trail must receive paint — no gaps between
+    opacity bands (the bead/gap artifact this renderer exists to prevent)."""
+    overlay = _overlay_math()
+    now = time.time()
+    # Quarter-circle arc, densified the way _build_trail does.
+    import math as _math
+
+    points = [
+        StrokePoint(QPointF(60 + 40 * _math.cos(t), 60 + 40 * _math.sin(t)))
+        for t in [_math.pi + i * (_math.pi / 2) / 20 for i in range(21)]
+    ]
+    for point in points:
+        point.timestamp = now
+    trail = overlay._build_trail(points, now + 0.1, 3.2)
+
+    image = QImage(128, 128, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+    overlay._stroke_trail(painter, trail, ACTIVE_RGB)
+    painter.end()
+
+    # Sample along the arc; nearly every sample must be painted (continuous
+    # stroke). Allow one sampling miss from integer pixel rounding.
+    painted = 0
+    for i in range(1, 20):
+        t = _math.pi + i * (_math.pi / 2) / 20
+        x, y = int(60 + 40 * _math.cos(t)), int(60 + 40 * _math.sin(t))
+        if image.pixelColor(x, y).alpha() > 0:
+            painted += 1
+    assert painted >= 18, f"trail has gaps: only {painted}/19 arc samples painted"
+
+
 def test_trail_stays_visible_then_fades_after_release():
     overlay = _overlay_math()
     t0 = time.time()
@@ -47,13 +90,12 @@ def test_trail_renderer_does_not_paint_expired_segments():
     overlay = _overlay_math()
     t0 = time.time()
     points = _points(t0)
-    color = (231, 246, 255)
 
     image = QImage(128, 88, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(0)
     painter = QPainter(image)
     overlay._stroke_trail(
-        painter, overlay._build_trail(points, t0 + 0.5, 3.2), ACTIVE_RGB, color
+        painter, overlay._build_trail(points, t0 + 0.5, 3.2), ACTIVE_RGB
     )
     painter.end()
     assert image.pixelColor(40, 40).alpha() > 0
@@ -62,7 +104,7 @@ def test_trail_renderer_does_not_paint_expired_segments():
     expired_image.fill(0)
     painter = QPainter(expired_image)
     overlay._stroke_trail(
-        painter, overlay._build_trail(points, t0 + 3.5, 3.2), ACTIVE_RGB, color
+        painter, overlay._build_trail(points, t0 + 3.5, 3.2), ACTIVE_RGB
     )
     painter.end()
     assert expired_image.pixelColor(40, 40).alpha() == 0

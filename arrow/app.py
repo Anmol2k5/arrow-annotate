@@ -156,14 +156,18 @@ def main():
         if not session or session.capture_id != capture_id:
             return
         log.warning("Voice recognition issue: %s", err)
-        # An unclear phrase is not a request to finish/capture the entire
-        # screen. Let the user continue drawing and finish explicitly.
+        # A speech failure is never a request to finish the capture. Keep the
+        # session usable and tell the user exactly what happened.
         if is_annotating:
-            message = (
-                "Voice unclear — keep drawing, then press Ctrl+Shift+Space"
-                if "understand" in err.lower()
-                else "Voice unavailable — finish with Ctrl+Shift+Space"
-            )
+            lowered = err.lower()
+            if "understand" in lowered:
+                message = "Voice wasn't understood — keep drawing, then press Ctrl+Shift+Space"
+            elif "no microphone" in lowered:
+                message = "No microphone — finish with Ctrl+Shift+Space"
+            elif "speech recognition error" in lowered:
+                message = "Voice service offline — finish with Ctrl+Shift+Space"
+            else:
+                message = "Voice unavailable — finish with Ctrl+Shift+Space"
             notch.set_status(message)
 
     voice.result_ready.connect(on_voice_result)
@@ -341,9 +345,15 @@ def main():
                 session_manager.transition_to(CaptureState.COMPLETED)
                 ui_bridge.post_for(capture_id, _report_sent)
         except Exception as e:
-            log.error("Agentation sync failed: %s", e)
-            if session_manager.fail_if_active(capture_id, f"agentation sync failed: {e}"):
-                ui_bridge.post_for(capture_id, lambda: notch.set_status("Agentation sync failed"))
+            # Agentation is optional. The screenshot is already saved and
+            # visible in the notch; a provider outage must not fail the
+            # capture or look like a local error.
+            log.warning("Agentation sync failed: %s", e)
+            if session_manager.complete_if_active(capture_id):
+                ui_bridge.post_for(
+                    capture_id,
+                    lambda: notch.set_status("Agentation offline — capture saved"),
+                )
 
     overlay.selection_complete.connect(on_selection)
 

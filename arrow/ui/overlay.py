@@ -9,10 +9,8 @@ from PyQt6.QtWidgets import QApplication, QWidget
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
 DEST_RGB = (34, 197, 94)         # Green
-ACTIVE_RGB = (65, 153, 255)       # Electric blue, matching the pointer trail
-SOURCE_CORE = (255, 214, 214)
-DEST_CORE = (214, 255, 228)
-ACTIVE_CORE = (231, 246, 255)    # Ice-blue / white leading edge
+ACTIVE_RGB = (79, 142, 247)      # #4F8EF7 primary electric blue
+ACTIVE_CORE = (226, 243, 255)    # #E2F3FF bright leading tip
 
 MARKER_LABELS = {"source": "Current", "destination": "Move here"}
 
@@ -86,6 +84,8 @@ class SelectionOverlay(QWidget):
     SUBDIVISION = 7
     FADE_BUCKETS = 28
     MAX_VISIBLE_TRAIL_POINTS = 220
+    # TipTour's layered highlighter: broad soft halo, mid bloom, saturated core.
+    TRAIL_LAYERS = ((54.0, 0.11), (32.0, 0.26), (18.0, 0.72))
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
 
@@ -246,8 +246,8 @@ class SelectionOverlay(QWidget):
     # ------------------------------------------------------------------
 
     def _update_fade(self):
-        has_live = self._current_stroke is not None and bool(self._current_stroke.points)
-        if self._strokes or has_live or self._is_drawing or self._active:
+        has_focus = any(s.locked for s in self._strokes)
+        if self._current_stroke is not None or has_focus or self._is_drawing:
             self.update()
         elif not self._active and not self._strokes:
             self.hide()
@@ -337,12 +337,17 @@ class SelectionOverlay(QWidget):
         ]
 
     def _stroke_trail(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
-                      rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
-        """Draw layered highlighter bands with flat caps instead of bead-like dots.
+                      rgb: Tuple[int, int, int]):
+        """Draw the trail as contiguous flat-capped opacity bands (TipTour-style).
 
-        TipTour draws smooth continuous paths with many trimmed opacity bands.
-        In Qt we use smoothed, short subpaths in alpha buckets. Flat caps make
-        neighboring segments abut cleanly rather than stacking round endcaps.
+        TipTour strokes ONE continuous smoothed path per glow layer and trims
+        it into opacity bands with flat caps, which eliminates the bead-like
+        round-cap junctions of per-segment rendering. Qt has no path trimming,
+        so we approximate: the densified trail is sliced into ordered
+        tail-to-head bands; each band is a single polyline sharing endpoints
+        with its neighbours and is stroked once per glow layer with FlatCap.
+        Overlapping band endpoints plus flat caps keep the curve continuous
+        without stacked endcap dots or alpha hotspots.
         """
         if not trail:
             return
@@ -356,28 +361,24 @@ class SelectionOverlay(QWidget):
                 painter.drawEllipse(point, 6.5, 6.5)
             return
 
-        buckets = [QPainterPath() for _ in range(self.FADE_BUCKETS)]
-        occupied = set()
-        for (prev_pt, prev_alpha), (pt, alpha) in zip(trail, trail[1:]):
-            midpoint = (prev_alpha + alpha) * 0.5
-            if midpoint <= 0.008:
-                continue
-            index = min(self.FADE_BUCKETS - 1, int(midpoint * self.FADE_BUCKETS))
-            bucket = buckets[index]
-            bucket.moveTo(prev_pt)
-            bucket.lineTo(pt)
-            occupied.add(index)
-
+        n = len(trail)
+        band_count = min(self.FADE_BUCKETS, max(1, n - 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        for index in sorted(occupied):
-            alpha = (index + 0.5) / self.FADE_BUCKETS
-            path = buckets[index]
-            # Wide soft halo / middle bloom / saturated highlighter core.
-            # QPainter lacks SwiftUI's per-layer gaussian blur; low-opacity
-            # outer passes keep the effect lightweight and native on Windows.
-            for width, opacity in ((42.0, 27), (26.0, 65), (14.0, 153)):
+        for band in range(band_count):
+            start = (band * (n - 1)) // band_count
+            end = ((band + 1) * (n - 1)) // band_count
+            if end <= start:
+                continue
+            band_alpha = max(trail[i][1] for i in range(start, end + 1))
+            if band_alpha <= 0.008:
+                continue
+            path = QPainterPath(trail[start][0])
+            for i in range(start + 1, end + 1):
+                path.lineTo(trail[i][0])
+            for width, max_opacity in self.TRAIL_LAYERS:
+                opacity = max_opacity * band_alpha
                 painter.setPen(QPen(
-                    QColor(r, g, b, int(opacity * alpha)),
+                    QColor(r, g, b, max(1, int(255 * opacity))),
                     width,
                     Qt.PenStyle.SolidLine,
                     Qt.PenCapStyle.FlatCap,
@@ -421,59 +422,44 @@ class SelectionOverlay(QWidget):
                             Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPath(corner_path)
 
-    def _draw_particles(self, painter: QPainter, trail: List[Tuple[QPointF, float]], rgb: Tuple[int, int, int]):
-        """Draw subtle glowing sparkles along the fading comet tail as shown in the gesture UI."""
-        r, g, b = rgb
-        for i, (pt, a) in enumerate(trail):
-            if a < 0.12 or i % 9 != 0:
-                continue
-            ox = math.sin(i * 12.9898 + pt.x()) * 7.0
-            oy = math.cos(i * 78.233 + pt.y()) * 7.0
-            sz = 0.9 + (math.sin(i * 1.5) + 1.0) * 0.5
-            particle_pt = QPointF(pt.x() + ox, pt.y() + oy)
-            alpha = int(75 * a * (0.6 + 0.4 * math.sin(i * 2.5)))
-            if alpha <= 0:
-                continue
-            painter.setBrush(QColor(r, g, b, alpha))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(particle_pt, sz, sz)
-
     def _draw_pointer_head(self, painter: QPainter, trail: List[Tuple[QPointF, float]],
                            rgb: Tuple[int, int, int], core_rgb: Tuple[int, int, int]):
-        """Draw a crisp white arrowhead at the tip of the live trail."""
+        """Compact white-blue pointer tip with a soft electric-blue halo."""
         if len(trail) < 3:
             return
 
-        p1, a1 = trail[max(0, len(trail) - 4)]
+        p1, _a1 = trail[max(0, len(trail) - 4)]
         p2, a2 = trail[-1]
-        
+
         if a2 <= 0.05:
             return
 
         angle = math.atan2(p2.y() - p1.y(), p2.x() - p1.x())
 
-        arrow_len = 22.0
+        arrow_len = 18.0
         arrow_angle = math.pi / 6.5
 
-        tip = QPointF(p2.x() + 5 * math.cos(angle), p2.y() + 5 * math.sin(angle))
+        tip = QPointF(p2.x() + 4 * math.cos(angle), p2.y() + 4 * math.sin(angle))
         left = QPointF(tip.x() - arrow_len * math.cos(angle - arrow_angle),
                        tip.y() - arrow_len * math.sin(angle - arrow_angle))
         right = QPointF(tip.x() - arrow_len * math.cos(angle + arrow_angle),
                         tip.y() - arrow_len * math.sin(angle + arrow_angle))
         notch = QPointF(tip.x() - arrow_len * 0.65 * math.cos(angle),
                         tip.y() - arrow_len * 0.65 * math.sin(angle))
-        
+
         r, g, b = rgb
         cr, cg, cb = core_rgb
 
-        # Glow layer
-        painter.setBrush(QColor(r, g, b, int(200 * a2)))
-        painter.setPen(QPen(QColor(r, g, b, int(100 * a2)), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        # Soft blue halo
+        painter.setBrush(QColor(r, g, b, int(90 * a2)))
+        painter.setPen(QPen(QColor(r, g, b, int(70 * a2)), 4, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPolygon([tip, left, notch, right])
 
-        # Core pure white arrowhead
-        painter.setBrush(QColor(255, 255, 255, int(255 * a2)))
-        painter.setPen(QPen(QColor(cr, cg, cb, int(255 * a2)), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        # Saturated white-blue core
+        painter.setBrush(QColor(cr, cg, cb, int(240 * a2)))
+        painter.setPen(QPen(QColor(r, g, b, int(180 * a2)), 1.2, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPolygon([tip, left, notch, right])
 
     # ------------------------------------------------------------------
@@ -549,24 +535,20 @@ class SelectionOverlay(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Draw translucent dark backdrop
-        painter.fillRect(self.rect(), QColor(15, 17, 23, 215))
 
-        # Render subtle dot-grid background pattern matching the gesture screenshot
-        grid_step = 28
-        painter.setPen(QPen(QColor(255, 255, 255, 18), 1.5))
-        for x in range(14, self.rect().width(), grid_step):
-            for y in range(14, self.rect().height(), grid_step):
-                painter.drawPoint(x, y)
+        # Mostly transparent veil: the desktop stays fully legible while
+        # drawing (TipTour-style). The trail and focus outlines provide the
+        # visual focus; a heavy full-screen tint would obscure the UI being
+        # annotated.
+        painter.fillRect(self.rect(), QColor(15, 17, 23, 32))
 
-        # Render floating guide pill at top center
-        banner_w, banner_h = 460, 34
+        # Compact guide pill at top center with an electric-blue accent.
+        banner_w, banner_h = 430, 32
         bx = int((self.rect().width() - banner_w) / 2)
-        by = 20
-        painter.setBrush(QColor(15, 23, 42, 230))
-        painter.setPen(QPen(QColor(244, 114, 182, 180), 1.5))
-        painter.drawRoundedRect(bx, by, banner_w, banner_h, 17, 17)
+        by = 16
+        painter.setBrush(QColor(10, 16, 28, 225))
+        painter.setPen(QPen(QColor(*ACTIVE_RGB, 170), 1.5))
+        painter.drawRoundedRect(bx, by, banner_w, banner_h, 16, 16)
 
         font = QFont()
         font.setBold(True)
@@ -576,7 +558,7 @@ class SelectionOverlay(QWidget):
         painter.drawText(
             bx, by, banner_w, banner_h,
             Qt.AlignmentFlag.AlignCenter,
-            "Draw: 1 Current  ->  2 Destination   |   Press ESC when done"
+            "1 Current  →  2 Destination   ·   Esc to finish"
         )
         
         now = time.time()
@@ -587,7 +569,7 @@ class SelectionOverlay(QWidget):
         # TipTour's non-obscuring highlighter treatment.
         for stroke in locked:
             afterglow = self._focus_trail(stroke.points, now, stroke.committed_at)
-            self._stroke_trail(painter, afterglow, ACTIVE_RGB, ACTIVE_CORE)
+            self._stroke_trail(painter, afterglow, ACTIVE_RGB)
 
         # Subdued semantic strokes and pulsing focus outlines remain visible
         # for source/destination, independently of the temporary blue glow.
@@ -617,14 +599,13 @@ class SelectionOverlay(QWidget):
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
 
-        # Active stroke: same glow, with a crisp white-blue pointer at the tip.
+        # Active stroke: same glow, with a compact white-blue pointer at the tip.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 1:
             trail = self._build_trail(
                 self._current_stroke.points[-self.MAX_VISIBLE_TRAIL_POINTS:],
                 now, self.TRAIL_SECONDS
             )
-            self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
-            self._draw_particles(painter, trail, ACTIVE_RGB)
+            self._stroke_trail(painter, trail, ACTIVE_RGB)
             self._draw_pointer_head(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
 
         painter.end()

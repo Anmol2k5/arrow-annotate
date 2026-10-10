@@ -252,9 +252,10 @@ def test_pipeline_record_flows_into_agentation_handoff(tmp_path):
     assert body["imagePath"].endswith("shot.png")
 
 
-def test_agentation_offline_fails_session_without_crashing(tmp_path):
-    """Mirrors the app's degradation path: offline Agentation must FAIL the
-    capture session with a recorded reason, not wedge it or raise."""
+def test_agentation_offline_completes_session_without_crashing(tmp_path):
+    """Offline Agentation must not fail a locally saved capture: the session
+    completes (the screenshot is already stored) and the app degrades with an
+    offline status instead of an error."""
     sm = SessionManager()
     session = sm.start_session()
     sm.transition_to(CaptureState.ANNOTATING)
@@ -270,14 +271,33 @@ def test_agentation_offline_fails_session_without_crashing(tmp_path):
 
     with pytest.raises(AgentationError) as excinfo:
         send_capture_annotation(client, make_record(tmp_path, "x"), "u")
+    assert "failed" in str(excinfo.value)
 
-    applied = sm.fail_if_active(
-        session.capture_id, f"agentation sync failed: {excinfo.value}"
-    )
+    # Local capture is fine: complete, do not fail.
+    applied = sm.complete_if_active(session.capture_id)
     assert applied is True
-    assert session.state is CaptureState.FAILED
-    assert "agentation sync failed" in session.error
+    assert session.state is CaptureState.COMPLETED
+    assert session.error is None
 
     # Recoverable: back to IDLE, a new capture can start.
     sm.transition_to(CaptureState.IDLE)
     assert sm.start_session().state is CaptureState.STARTING
+
+
+def test_complete_if_active_ignores_superseded_session():
+    sm = SessionManager()
+    session = sm.start_session()
+    sm.transition_to(CaptureState.ANNOTATING)
+    sm.transition_to(CaptureState.COLLECTING_CONTEXT)
+    sm.transition_to(CaptureState.PROCESSING)
+    sm.transition_to(CaptureState.PREVIEW)
+    sm.transition_to(CaptureState.READY)
+    sm.transition_to(CaptureState.SENDING)
+    sm.transition_to(CaptureState.RUNNING)
+    old_id = session.capture_id
+
+    # A new capture supersedes the old one.
+    sm.start_session()
+    assert sm.complete_if_active(old_id) is False
+    assert sm.active_session is not None
+    assert sm.active_session.capture_id != old_id

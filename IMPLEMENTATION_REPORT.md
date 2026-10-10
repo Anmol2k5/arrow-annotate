@@ -37,8 +37,10 @@ implemented, gate by gate. Current status: **15 of 18 gates met** (see
   discards stale callbacks for superseded captures. `arrow/app.py` never
   touches widgets from worker threads anymore. (G10)
 - **Session wedging fixed**: `fail_if_active(capture_id, reason)` records an
-  error on the right capture; screenshot failure and Agentation failure both
-  degrade to `FAILED` + status message instead of wedging or crashing.
+  error on the right capture; screenshot failure degrades to `FAILED` +
+  status message instead of wedging or crashing. Optional provider
+  (Agentation) failure uses `complete_if_active` so a saved capture is
+  never failed (see Phase 5).
 - **Voice input rewrite** (`arrow/ui/voice_input.py`): generation-based
   cancellation. A stopped/stale session can no longer clobber the next
   session's state (the old `finally: self._listening = False` race). Mic
@@ -63,8 +65,10 @@ implemented, gate by gate. Current status: **15 of 18 gates met** (see
 ## Phase 4 — UI/UX
 
 - Status messages now cover the whole capture lifecycle through the notch:
-  `Screenshot failed`, `Capture failed` (pipeline), `Agentation sync
-  failed`, and `Sent to Agentation` (auto-clears after 6s).
+  `Screenshot failed`, `Capture failed` (pipeline), `Agentation offline —
+  capture saved` (amber; provider outage is not a local failure), and
+  `Sent to Agentation` (auto-clears after 6s). Voice errors distinguish
+  "wasn't understood" / "no microphone" / "service offline".
 - Fixed a real hotkey bug: `is_annotating` was never reset after a
   successful selection, so the next hotkey press was swallowed (the toggle
   thought a capture was still active). It now returns to idle as soon as
@@ -73,11 +77,36 @@ implemented, gate by gate. Current status: **15 of 18 gates met** (see
   the voice session quietly instead of surfacing as an error that cancelled
   the entire capture.
 
+## Phase 5 — TipTour trail & overlay polish
+
+Studied TipTour's `CursorStreakTrailView` / `buildContinuousSmoothTrailPath`
+(`OverlayWindow.swift`) and `DetectionOverlayView.swift`, then adapted the
+rendering approach to PyQt6 (`arrow/ui/overlay.py`):
+
+- **Continuous band rendering**: densified Catmull-Rom trail sliced into
+  ordered tail→head opacity bands; each band is one polyline with shared
+  endpoints, stroked once per glow layer with flat caps — the Qt
+  equivalent of TipTour's "one continuous path, trimmed into bands",
+  eliminating round-cap bead junctions.
+- **Three-layer glow** at the reference proportions: 54 px @ 0.11 halo,
+  32 px @ 0.26 bloom, 18 px @ 0.72 core; palette `#4F8EF7` / `#E2F3FF`.
+- Removed sparkle particles (they contradicted the "no glowing dots"
+  highlighter aesthetic).
+- **Overlay veil reduced** from alpha 215 to 32; removed the full-screen
+  dot grid (thousands of `drawPoint` calls per frame). The desktop stays
+  legible while drawing; the guide pill uses the electric-blue accent.
+- Idle overlay skips 60 fps repaints when nothing is animating.
+- Compact white-blue pointer head (18 px) with a soft blue halo.
+- `SessionManager.complete_if_active`: an Agentation outage completes the
+  session (capture already saved) instead of failing it; notch shows an
+  amber offline status.
+- Notch: offline status color, tooltips on copy/trash controls.
+
 ## Test & verification infrastructure
 
-- `tests/` grew from the partial suite to **307 passing tests**; new suites:
-  config, share tokens, crop geometry, screenshot upload, threading, voice,
-  agentation, notch status, hotkey.
+- `tests/` grew to **317 passing tests**; new suites: config, share
+  tokens, crop geometry, screenshot upload, threading, voice, agentation,
+  notch status, hotkey, trail fade (band continuity, layer ordering).
 - `GATES.md`: 18 outcome-focused gates with machine-checkable oracles;
   unlazy gate ledger keeps them honest.
 - `scripts/verify-extension.mjs`, `scripts/verify-docs.mjs`,
