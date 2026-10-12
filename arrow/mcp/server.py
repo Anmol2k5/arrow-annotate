@@ -17,7 +17,7 @@ import sys
 from typing import Any, Optional
 
 from arrow.mcp.resources import ResourceProvider
-from arrow.mcp.tools import TOOL_SCHEMAS, ArrowTools, ToolError
+from arrow.mcp.tools import TOOL_SCHEMAS, ArrowTools, RawContent, ToolError
 from arrow.storage.repository import Repository
 
 log = logging.getLogger("arrow.mcp.server")
@@ -70,6 +70,9 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
         except Exception as e:  # pragma: no cover - defensive
             log.exception("tool call failed")
             return _error(request_id, -32603, f"Internal error: {e}")
+        if isinstance(value, RawContent):
+            # Images must stay real MCP content blocks to be viewable.
+            return _result(request_id, {"content": value.content})
         return _result(request_id, {
             "content": [{"type": "text", "text": json.dumps(value, indent=2)}],
         })
