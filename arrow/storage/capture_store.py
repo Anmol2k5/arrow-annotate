@@ -2,12 +2,23 @@ import json
 import os
 from typing import Optional
 
+from arrow.core.config import resolve_captures_dir, resolve_screenshots_dir
 from arrow.storage.database import get_db_connection, init_db
 from arrow.storage.schemas import CaptureRecord
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CAPTURES_DIR = os.path.join(ROOT_DIR, "captures")
-SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
+# Asset roots come from ARROW_HOME so capture, HTTP serving and the store agree.
+CAPTURES_DIR = resolve_captures_dir()
+SCREENSHOTS_DIR = resolve_screenshots_dir()
+
+
+def captures_dir() -> str:
+    """Current capture working directory (re-reads ARROW_HOME)."""
+    return resolve_captures_dir()
+
+
+def screenshots_dir() -> str:
+    """Current screenshot asset directory (re-reads ARROW_HOME)."""
+    return resolve_screenshots_dir()
 
 
 class CaptureStore:

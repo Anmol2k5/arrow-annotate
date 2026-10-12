@@ -19,7 +19,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
-from arrow.core.config import get_config, port_available
+from arrow.core.config import get_config, port_available, resolve_screenshots_dir
 from arrow.server.screenshots import (
     UploadError,
     crop_box_for_monitors,
@@ -39,7 +39,9 @@ from arrow.server.security import (
 log = logging.getLogger("arrow.server")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
+# Asset root for served screenshots; ARROW_HOME keeps it identical to the
+# directory the capture pipeline writes into (tests patch this attribute).
+SCREENSHOTS_DIR = resolve_screenshots_dir()
 
 
 def _package_version() -> str:

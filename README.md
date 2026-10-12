@@ -81,8 +81,11 @@ way; captures flow through the same local pipeline.
 ## Privacy
 
 - No telemetry, no analytics, no third-party servers.
-- Screenshots stay on disk under `screenshots/`; the local SQLite database
-  (`arrow.db`) stores capture metadata only.
+- All user data lives under `ARROW_HOME` (default `~/.arrow`): screenshots in
+  `screenshots/`, the SQLite database (`arrow.db`) holds capture metadata only,
+  and generated context sits in `captures/`. On first start after upgrading, a
+  database previously kept in the checkout is moved into `ARROW_HOME`
+  automatically, and never overwritten if one already exists there.
 - Share links are HMAC-signed, expire after 15 minutes, and are scoped to a
   single file — they are not reusable as a general API token.
 - The extension cannot read arbitrary sites: its required host permissions are

@@ -149,9 +149,19 @@ discarded when it no longer matches the active session.
 
 ## 6. Persistence
 
-- `arrow.db` (SQLite) — capture records, change requests.
+- All user data resolves through `arrow.core.config`, so `ARROW_HOME` moves it as
+  a unit. Default `~/.arrow`.
+- `arrow.db` (SQLite) — capture records, change requests. `ARROW_DB_PATH` overrides.
 - `screenshots/` — annotated images and crops, named with collision-resistant ids.
-- `~/.arrow/` (`ARROW_HOME`) — `token`, `config.json` (selected project), logs.
+- `captures/` — generated context files.
+- `ARROW_HOME` also holds `token`, `config.json` (selected project), logs.
+
+`resolve_screenshots_dir()` is the single source of truth shared by the capture
+pipeline, the capture store and the HTTP screenshot routes, so a capture can
+never be written to a directory the server will not serve. On first start,
+`migrate_legacy_home()` moves a pre-`ARROW_HOME` checkout database into
+`ARROW_HOME` exactly once, and skips entirely when a database already exists
+there.
 
 ## 7. Shutdown
 

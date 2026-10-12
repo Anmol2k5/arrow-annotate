@@ -14,6 +14,7 @@ deliberately *not* configurable through the environment.
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional
 
@@ -199,6 +200,64 @@ def resolve_home() -> str:
     return os.path.abspath(os.path.expanduser(home))
 
 
+def resolve_screenshots_dir() -> str:
+    """Capture asset directory. Single source of truth for every writer/reader.
+
+    Screenshot capture, the HTTP screenshot routes and the capture store must
+    agree, or a capture is written where the server will not serve it.
+    """
+    return os.path.join(resolve_home(), "screenshots")
+
+
+def resolve_captures_dir() -> str:
+    """Working directory for generated capture context files."""
+    return os.path.join(resolve_home(), "captures")
+
+
+def resolve_db_path() -> str:
+    """SQLite location. ``ARROW_DB_PATH`` overrides, else under ARROW_HOME."""
+    return env_value("ARROW_DB_PATH") or os.path.join(resolve_home(), "arrow.db")
+
+
+def legacy_root() -> str:
+    """Directory older releases used: the checkout that contained the package."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def migrate_legacy_home() -> bool:
+    """Move a pre-ARROW_HOME database and screenshots into ARROW_HOME, once.
+
+    Older releases derived both paths from the checkout directory. Existing
+    installs must not silently lose their capture history, but we also must
+    never overwrite live data: the move is skipped entirely if the destination
+    already holds a database. Returns True when something was moved.
+    """
+    home = resolve_home()
+    legacy = legacy_root()
+    if os.path.abspath(legacy) == os.path.abspath(home):
+        return False
+
+    dest_db = resolve_db_path()
+    legacy_db = os.path.join(legacy, "arrow.db")
+    if os.path.exists(dest_db) or not os.path.isfile(legacy_db):
+        return False
+
+    os.makedirs(home, exist_ok=True)
+    try:
+        shutil.move(legacy_db, dest_db)
+    except OSError:
+        return False
+
+    legacy_shots = os.path.join(legacy, "screenshots")
+    dest_shots = resolve_screenshots_dir()
+    if os.path.isdir(legacy_shots) and not os.path.exists(dest_shots):
+        try:
+            shutil.move(legacy_shots, dest_shots)
+        except OSError:
+            pass  # database moved; screenshots can be retried on the next start
+    return True
+
+
 _cached: Optional[AppConfig] = None
 
 
@@ -238,7 +297,12 @@ __all__ = [
     "load_config",
     "env_value",
     "load_dotenv",
+    "legacy_root",
+    "migrate_legacy_home",
     "port_available",
     "reset_config_cache",
     "resolve_home",
+    "resolve_captures_dir",
+    "resolve_db_path",
+    "resolve_screenshots_dir",
 ]
