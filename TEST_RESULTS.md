@@ -6,88 +6,85 @@ Branch: `fix/arrow-annotate-prelaunch`
 ## Python suite
 
 ```
-389 passed, 1 warning in 28.57s
+489 passed, 1 warning in 51.08s
 ```
 
 - The single warning is a pre-existing `mss.mss` deprecation in
   `arrow/server/server.py` and does not affect results.
-- Baseline at the start of this pass (`2859dbc`): 345 passed.
-- After merging `origin/fix/arrow-annotate-prelaunch` (`066db08`): 349 passed
-  (the 4 restored `test_notch_animation.py` tests).
-- This pass adds 40 tests:
-  - `test_config_propagation.py` (6) — `ARROW_HOME` reaches the database and
-    both asset roots; legacy checkout data migrates exactly once and never
-    overwrites live data.
-  - `test_threading.py` (+1) — a UI callback queued while capture A was current
-    is re-checked at delivery, after B supersedes it.
-  - `test_point_mode.py` (19) — point-target resolution and geometry,
-    including negative monitor origins and honest fallback labelling.
-  - `test_point_overlay.py` (9) — Point Mode gesture, no shared stroke state,
-    and cancel-instead-of-full-screen on an empty finish.
-  - `test_notch_modes.py` (5) — notch → app capture-mode wiring.
+- Start of this pass (`a82b97d`): 389 passed.
+- Added this pass: **100 tests** (point lifecycle 19, tasks 30,
+  point+task integration 7, MCP tasks 21, agent pointer 22, notch modes 1).
+
+### Suites added
+
+| File | Tests | Covers |
+|---|---|---|
+| `test_point_lifecycle.py` | 19 | Overlay teardown ordering, thread safety, state reconciliation |
+| `test_tasks.py` | 30 | TaskBundle persistence, ordering, edit, export, migration |
+| `test_point_task_integration.py` | 7 | Real point captures landing in one task, restart survival |
+| `test_mcp_tasks.py` | 21 | Task-aware MCP, real image content, honest status |
+| `test_agent_pointer.py` | 22 | Spring convergence, bounded timestep, stability |
 
 ### Verified red-capable
 
-Each new fix was confirmed to fail before the change and pass after. The
-delivery-time race test was checked by stashing only `arrow/core/threads.py`
-and re-running it:
+Each fix was confirmed to fail before the change:
 
-```
-=== with fix (expect PASS) ===        1 passed
-=== verify it actually goes RED without the fix ===   1 failed
-```
+- **Point capture race** — moving the worker dispatch ahead of the overlay
+  teardown turned 4 tests red, including
+  `test_raw_capture_begins_only_after_overlay_teardown`.
+- **Callback race** — stashing only `arrow/core/threads.py` turned the
+  delivery-time test red.
+- **ARROW_HOME** — all 3 propagation tests failed before the resolvers existed.
 
-## Browser extension (Node)
+## Integration verification
 
-```
-node --test browser_extension/tests/background.test.mjs
-tests 14 | pass 14 | fail 0
-```
+### Real, verified
+
+- **App launch** — `main.py` runs, binds `127.0.0.1:5001` + WS `5002`, polls
+  `/status`, no tracebacks. Migration 3 applied to the real database.
+- **ARROW_HOME migration** — the repo-local `arrow.db` was moved to
+  `~/.arrow/arrow.db` (90,112 bytes) with data intact.
+- **MCP over real stdio** — a separate `python -m arrow.mcp.server` process
+  returned a task manifest and an image content block decoding to a valid PNG
+  (signature `\x89PNG` verified).
+- **Real Claude Code client** — Claude Code **2.1.205** was installed and
+  `claude mcp add arrow` + `claude mcp list` reported
+  `arrow: ... - ✔ Connected`. Config went to `~/.claude.json`; the repo stayed
+  clean.
+
+### Mocked / unit-tested only
+
+- Capture pipeline, UIA/OCR resolution, screenshot acquisition — all use
+  fakes. No automated test touches a real screen.
+- Codex integration — **Codex is not installed on this machine.** Its MCP
+  setup doc is therefore unverified.
+
+### NOT verified — no interactive desktop session
+
+- Point Mode against real Chrome / native Windows apps.
+- Live UIA/OCR target-resolution quality.
+- Agent pointer as actually rendered on screen (physics is unit-tested;
+  the painting path is untested).
+- Multi-monitor physical setup (negative coordinates are unit-tested only).
+- Voice recognition, notch animation feel, DPI 125/150/200%.
+- Any packaging or distributable build.
 
 ## Static checks
 
-- `ruff check .` → All checks passed
-- `mypy arrow` → Success: no issues found in 50 source files
-- `node scripts/verify-extension.mjs` → extension verification passed
-- `node scripts/verify-docs.mjs` → docs verification passed
-- `node scripts/verify-ci.mjs` → ci verification passed
-
-## Windows launch smoke test
-
 ```
-Start-Process .venv\Scripts\python.exe main.py     # ran 12s, then stopped
+ruff check .      -> All checks passed
+mypy arrow        -> Success: no issues found in 54 source files
+pip check         -> No broken requirements found
+verify-extension  -> extension verification passed
+verify-docs       -> docs verification passed
+verify-ci         -> ci verification passed
+node --test browser_extension/tests/background.test.mjs -> 14 pass / 0 fail
 ```
-
-Observed on stderr, no tracebacks:
-
-```
-[INFO] server listening on 127.0.0.1:5002
-[INFO] [WSBridge] listening on ws://127.0.0.1:5002
-[INFO] [AgentServer] listening on http://127.0.0.1:5001
-[INFO] 127.0.0.1 - - "GET /status HTTP/1.1" 200 -   (repeats every 5s)
-```
-
-The `ARROW_HOME` migration was confirmed on real data: the repo-local
-`arrow.db` was gone afterwards and `~/.arrow/arrow.db` existed at 90,112 bytes.
-
-## NOT verified — interactive GUI
-
-No interactive desktop session was available to the agent, so **none** of the
-following were exercised. They are unverified, not passing:
-
-- Clicking an element in Chrome / a native app and seeing it in the notch.
-- Actual UIA/OCR resolution quality against a live desktop.
-- Multi-monitor physical setup with a left/above monitor (geometry is covered
-  by unit tests only).
-- Voice capture, notch animation smoothness, DPI 125/150/200% rendering.
 
 ## Earlier results
 
-- Baseline before this pass (after fast-forward to `70b5d8c`): 314 passed.
-- Suites added since then include: overlay math (P0-1 negative coords),
-  database asset handling (P0-3), extension/config/agentation unit tests
-  (P0-5), and `test_overlay_cancel.py` (P0-6 Escape/finish semantics,
-  7 tests), plus `test_context_file.py` (4 tests).
+- Baseline before the previous pass (`70b5d8c`): 314 passed.
+- Phase 0/1 pass (`a82b97d`): 389 passed.
 
 ## Static checks
 
