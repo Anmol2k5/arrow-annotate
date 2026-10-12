@@ -52,15 +52,25 @@ class UiBridge(QObject):
     def post_for(self, capture_id: str, fn: Callable[[], None]) -> bool:
         """Queue fn only when capture_id is still the current capture.
 
-        Returns True when the callback was queued, False when it was dropped
-        as stale. The check is inherently racy across threads, so handlers
-        must still verify session liveness (defense in depth).
+        The check is inherently racy across threads: capture B can start
+        between this check and delivery, so the same liveness test is
+        repeated when fn actually runs on the main thread. The double check
+        is the whole point -- callers then never have to re-verify themselves.
         """
-        if not capture_id or capture_id != self._current_capture_id:
+        if not self._is_current(capture_id):
             logger.debug("Dropping stale UI callback for capture %s", capture_id)
             return False
-        self._invoke.emit(fn)
+        self._invoke.emit(lambda: self._deliver_if_current(capture_id, fn))
         return True
+
+    def _is_current(self, capture_id: str) -> bool:
+        return bool(capture_id) and capture_id == self._current_capture_id
+
+    def _deliver_if_current(self, capture_id: str, fn: Callable[[], None]) -> None:
+        if not self._is_current(capture_id):
+            logger.debug("Dropping superseded UI callback for capture %s", capture_id)
+            return
+        fn()
 
     @pyqtSlot(object)
     def _run(self, fn: Callable[[], None]) -> None:

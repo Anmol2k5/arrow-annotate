@@ -85,6 +85,46 @@ def test_post_for_never_started_capture_is_dropped():
     assert delivered == []
 
 
+def test_callback_queued_before_supersession_is_rechecked_at_delivery():
+    """The queue-time check is racy; delivery must re-validate.
+
+    A callback queued by a worker while capture A is current may only run if
+    A is still current when it is actually delivered on the main thread.
+    Capturing is asynchronous, so B can start in between.
+    """
+    _qapp()
+    bridge = UiBridge()
+    delivered = []
+
+    bridge.begin_capture("A")
+
+    # A worker emit is always queued, so the callback is still pending here.
+    posted = threading.Event()
+
+    def worker():
+        bridge.post_for("A", lambda: delivered.append("A"))
+        posted.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert posted.wait(2.0)
+    assert delivered == [], "main-thread emit should not run synchronously"
+
+    # B supersedes A *before* the event loop delivers the queued callback.
+    bridge.begin_capture("B")
+    _qapp().processEvents()
+    time.sleep(0.05)
+    _qapp().processEvents()
+
+    assert delivered == [], f"stale callback ran after supersession: {delivered}"
+
+    # The live capture is unaffected.
+    bridge.post_for("B", lambda: delivered.append("B"))
+    assert _wait_until(lambda: "B" in delivered)
+    assert delivered == ["B"]
+
+
 def test_worker_stale_post_is_dropped_before_queueing():
     _qapp()
     bridge = UiBridge()
