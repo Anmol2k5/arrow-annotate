@@ -251,10 +251,10 @@ class SelectionOverlay(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._capture_mode is CaptureMode.POINT:
-                # One click is a complete capture. ``globalPosition`` is already
+                # One click is one capture. ``globalPosition`` is already
                 # virtual-desktop space (negative on a left/above monitor),
                 # which is exactly what stroke_rect/get_gesture_trail derive.
-                # Leave the overlay up so more clicks join the same task.
+                # app.py tears the overlay down synchronously in response.
                 pos = event.globalPosition()
                 self.point_selected.emit(int(pos.x()), int(pos.y()))
                 return

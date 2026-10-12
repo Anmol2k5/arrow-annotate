@@ -44,13 +44,18 @@ loopback binding). Non-loopback hosts are rejected unless
 Arrow has two capture modes. **Ctrl+Shift+Space** launches whichever mode is
 currently selected; the notch's **Capture** and **Point** buttons set it.
 
-### Point mode — one click is a capture
+### Point mode — one click is one capture
 
 - Click **⊙ Point**, then click any element on screen.
+- That single click completes the capture: the overlay closes, the screenshot
+  is taken with the overlay already hidden, and a card appears in the notch.
 - Arrow resolves the element through Windows UI Automation (and OCR where UIA
-  finds nothing), crops to its real bounds, and saves the capture.
-- The overlay stays open, so you can click several elements into the same task
-  before finishing.
+  finds nothing), crops to its real bounds, and records the resolution method
+  and confidence.
+- Click **⊙ Point** again to add another capture. Related captures are grouped
+  into a task bundle so they can be sent to an agent together.
+- If a capture is still processing, the notch says so rather than silently
+  dropping the previous one.
 - When no element can be identified, Arrow still saves a crop around the click
   and records the target as `fallback` with no confidence — it never reports a
   guess as a detected element.

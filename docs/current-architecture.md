@@ -70,9 +70,30 @@ gesture produces the selection, so there is no second state machine.
 |---|---|---|
 | Gesture | freehand source + optional destination stroke | one left click |
 | Selection signal | `selection_complete(rect)` | `point_selected(x, y)` |
+| After the gesture | overlay stays open until finish | **overlay closes; one click is one capture** |
 | Rect | stroke bounding box | resolved element bounds, else fallback crop |
 | Provenance | stroke geometry | `method` + `confidence` + `evidence` |
 | Finish with no gesture | full-screen capture | **cancel** (never a silent full-screen shot) |
+
+`arrow/capture/point_capture.py` owns the Point Mode handoff. The ordering is
+the contract, and it is enforced rather than hoped for:
+
+1. **GUI thread** — `on_point_selected` snapshots every mutable input (capture
+   id, mode, click point, virtual-desktop bounds, cursor, window title,
+   instruction, project dir, timestamp) into a frozen `PointCaptureRequest`,
+   then calls `PointCaptureCoordinator.begin`, which invokes the overlay
+   teardown **synchronously** before dispatching the worker.
+2. **Worker** — resolves the target (UIA → OCR → fallback), grabs the raw
+   screenshot, and runs the pipeline. It never touches a Qt widget: all
+   geometry was snapshotted in step 1.
+3. **Back on the GUI thread** — status and notch refresh are delivered through
+   `UiBridge.post_for`, which re-checks capture liveness at delivery.
+
+Because teardown is synchronous and precedes the spawn, Arrow's own overlay
+cannot appear in captured pixels regardless of scheduling. A capture is dropped
+if its session is no longer active before acquisition, so a superseded or
+cancelled capture is never persisted. A second click while one capture is still
+running is rejected rather than allowed to silently cancel the first.
 
 `arrow/context/point_target.py` resolves a point through the existing
 `NativeContextResolver` (UIA → OCR → unresolved). A resolved target uses the
