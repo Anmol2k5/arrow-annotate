@@ -73,6 +73,33 @@ currently selected; the notch's **Capture** and **Point** buttons set it.
   Starting without drawing any stroke and finishing captures the full
   screen; cancelling never does.
 
+### Tasks — grouping several captures
+
+- Click **+ Task**, then take captures as normal. They are grouped into one
+  task in the order you made them.
+- **Copy task** puts the task on your clipboard as Markdown an AI agent can
+  read, including the instruction, each capture's app/window, the target
+  resolution method, and screenshot paths.
+- Tasks persist across restarts. Deleting a task keeps the captures and their
+  screenshot files.
+- A task stays `draft` until an agent actually works on it — Arrow never shows
+  "sent to AI" just because a file exists.
+
+### Sharing a task with an existing AI agent
+
+Register Arrow's MCP server once, then ask your agent for it:
+
+```powershell
+claude mcp add arrow -- .\.venv\Scripts\python.exe -m arrow.mcp.server
+```
+
+Then, in an existing Claude Code session: *"Read my latest Arrow task and
+implement the requested change."* The agent pulls the task manifest and calls
+`arrow_get_capture_image` to actually see each screenshot. This is a
+handoff into your **existing** session — it does not start a new CLI process.
+See [`docs/claude-mcp-setup.md`](docs/claude-mcp-setup.md) and
+[`docs/codex-mcp-setup.md`](docs/codex-mcp-setup.md).
+
 ### Both modes
 
 - Voice recognition starts during capture when available; it uses Google
