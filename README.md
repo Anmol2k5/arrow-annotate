@@ -88,6 +88,7 @@ way; captures flow through the same local pipeline.
 - `docs/current-architecture.md` — how the pieces fit together
 - `docs/security-audit.md` — threat model and mitigations
 - `docs/development.md` — dev setup, gates, contribution workflow
+- `docs/cloud-development.md` — Codespaces/OpenCode cloud setup (development only; Windows GUI remains local)
 - `docs/testing.md` — test suites and patterns
 - `docs/troubleshooting.md` — common issues and fixes
 - `AUDIT_REPORT.md` — prelaunch technical/UI audit
@@ -104,3 +105,11 @@ node scripts/verify-extension.mjs   # extension syntax + state-machine tests
 ```
 
 See `docs/development.md` for the gate ledger workflow (`GATES.md`).
+
+## Cloud development with OpenCode
+
+You can develop in a Linux Codespace using the checked-in `.devcontainer/` setup.
+
+[Create a Codespace on the prelaunch branch](https://codespaces.new/Anmol2k5/arrow-annotate/tree/fix/arrow-annotate-prelaunch)
+
+See [cloud setup and limitations](docs/cloud-development.md). The interactive PyQt6 Windows desktop app cannot run inside this Linux Codespace; run its GUI manually on Windows.
