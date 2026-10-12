@@ -6,6 +6,8 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QApplication, QWidget
 
+from arrow.capture.session import CaptureMode
+
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
 DEST_RGB = (34, 197, 94)         # Green
@@ -90,6 +92,7 @@ class SelectionOverlay(QWidget):
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
     cancelled = pyqtSignal()  # emitted when the user aborts (Escape) — no selection follows
+    point_selected = pyqtSignal(int, int)  # POINT mode: virtual-desktop (x, y) of one click
 
     def __init__(self):
         super().__init__()
@@ -105,12 +108,25 @@ class SelectionOverlay(QWidget):
         self._current_stroke: Optional[Stroke] = None
         self._is_drawing = False
         self._active = False
+        self._capture_mode = CaptureMode.ANNOTATE
 
         self._fade_timer = QTimer(self)
         self._fade_timer.timeout.connect(self._update_fade)
         self._fade_timer.setInterval(16)  # ~60fps, only while overlay is open
 
         self._offset = QPointF(0, 0)
+
+    @property
+    def capture_mode(self) -> CaptureMode:
+        return self._capture_mode
+
+    def set_capture_mode(self, mode: CaptureMode) -> None:
+        """Switch gesture interpretation. Never invents or drops strokes."""
+        self._capture_mode = CaptureMode(mode)
+        if self._capture_mode is CaptureMode.POINT:
+            self._strokes.clear()
+            self._current_stroke = None
+            self._is_drawing = False
 
     def get_gesture_trail(self) -> list[dict]:
         """Export all locked strokes as serializable gesture data.
@@ -193,6 +209,11 @@ class SelectionOverlay(QWidget):
                     result["destination"] = dest_rect
             self.selection_complete.emit(_mock(result))
         else:
+            if self._capture_mode is CaptureMode.POINT:
+                # Point mode captures on click. Finishing without a click is a
+                # cancel, never a silent full-screen screenshot.
+                self.cancelled.emit()
+                return
             # No stroke drawn → full screen fallback
             geom = self.geometry()
             rect = {"x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height()}
@@ -229,6 +250,14 @@ class SelectionOverlay(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._capture_mode is CaptureMode.POINT:
+                # One click is a complete capture. ``globalPosition`` is already
+                # virtual-desktop space (negative on a left/above monitor),
+                # which is exactly what stroke_rect/get_gesture_trail derive.
+                # Leave the overlay up so more clicks join the same task.
+                pos = event.globalPosition()
+                self.point_selected.emit(int(pos.x()), int(pos.y()))
+                return
             self._is_drawing = True
             role = self._next_role()
             # A new stroke replaces an earlier stroke of the same role
@@ -582,10 +611,15 @@ class SelectionOverlay(QWidget):
         font.setPointSize(10)
         painter.setFont(font)
         painter.setPen(QPen(QColor(241, 245, 249), 1))
+        hint = (
+            "Click the element to capture   ·   Esc cancels"
+            if self._capture_mode is CaptureMode.POINT
+            else "1 Current  →  2 Destination   ·   Ctrl+Shift+Enter finishes · Esc cancels"
+        )
         painter.drawText(
             bx, by, banner_w, banner_h,
             Qt.AlignmentFlag.AlignCenter,
-            "1 Current  →  2 Destination   ·   Ctrl+Shift+Enter finishes · Esc cancels"
+            hint
         )
         
         now = time.time()

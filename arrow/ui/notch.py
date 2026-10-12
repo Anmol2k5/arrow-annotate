@@ -778,6 +778,24 @@ class ScreenshotsView(QWidget):
         capture_btn.clicked.connect(self._highlight)
         pill_layout.addWidget(capture_btn)
 
+        point_btn = QPushButton("⊙  Point")
+        point_btn.setToolTip("Click one element to capture it • Ctrl+Shift+Space")
+        point_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        point_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        point_btn.clicked.connect(self._point)
+        pill_layout.addWidget(point_btn)
+
         top.addWidget(pill_frame)
         wordmark = QLabel("ARROW   /   ANNOTATE")
         wordmark.setStyleSheet(
@@ -975,6 +993,12 @@ class ScreenshotsView(QWidget):
         parent_notch = self.window()
         if hasattr(parent_notch, 'on_highlight_requested'):
             parent_notch.on_highlight_requested()
+
+    def _point(self):
+        """One click is a complete capture (Point Mode)."""
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_point_requested'):
+            parent_notch.on_point_requested()
 
     def _copy_all(self):
         try:

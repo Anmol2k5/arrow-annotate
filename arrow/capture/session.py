@@ -49,6 +49,20 @@ class CaptureState(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class CaptureMode(str, Enum):
+    """How the user expresses what they mean.
+
+    ``POINT`` — one click is a complete capture (TipTour-style pointing).
+    ``ANNOTATE`` — freehand source/destination strokes, the original flow.
+
+    Both modes share one CaptureSession and one pipeline; the mode only
+    decides which overlay gesture produces the selection.
+    """
+
+    POINT = "point"
+    ANNOTATE = "annotate"
+
+
 class Annotation(BaseModel):
     id: str
     type: str  # "pointer", "rectangle", "highlight", "arrow", "freehand", "text"
@@ -67,6 +81,7 @@ class CaptureSession(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     state: CaptureState = CaptureState.IDLE
     mode: str = "desktop"
+    capture_mode: CaptureMode = CaptureMode.ANNOTATE
     project_id: Optional[str] = None
     annotations: List[Annotation] = Field(default_factory=list)
     source_anchor: Optional[Dict[str, Any]] = None

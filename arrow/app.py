@@ -4,12 +4,13 @@ import os
 import signal
 import sys
 import threading
+from typing import Optional
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from arrow.capture.screenshot_service import ScreenshotService
-from arrow.capture.session import Annotation, CaptureState, SessionManager
+from arrow.capture.session import Annotation, CaptureMode, CaptureState, SessionManager
 from arrow.context.orchestrator import ContextOrchestrator
 from arrow.core.threads import UiBridge
 from arrow.server.server import AgentServer
@@ -103,9 +104,20 @@ def main():
     current_voice_text = ""
     is_annotating = False
     last_toggle_time = 0.0
+    # Explicit modes, not a second state machine: the same CaptureSession and
+    # pipeline run either way, only the overlay gesture differs.
+    capture_mode = CaptureMode.ANNOTATE
+    latest_point = {"target": None}
 
-    def toggle_annotation():
+    def set_capture_mode(mode: CaptureMode):
+        nonlocal capture_mode
+        capture_mode = CaptureMode(mode)
+        overlay.set_capture_mode(capture_mode)
+
+    def toggle_annotation(mode: Optional[CaptureMode] = None):
         nonlocal is_annotating, current_voice_text, last_toggle_time
+        if mode is not None:
+            set_capture_mode(mode)
         now = time.time()
         if now - last_toggle_time < 0.3:
             return  # Prevent rapid duplicate hotkey triggers
@@ -114,12 +126,14 @@ def main():
         if not is_annotating:
             is_annotating = True
             current_voice_text = ""
-            
+            latest_point["target"] = None
+
             # Start new capture session
             session = session_manager.start_session()
             capture_id = session.capture_id
+            session.capture_mode = capture_mode
             ui_bridge.begin_capture(capture_id)
-            
+
             # Transition to ANNOTATING
             session_manager.transition_to(CaptureState.ANNOTATING)
 
@@ -167,7 +181,8 @@ def main():
         if notch.status_text == "Capture cancelled":
             notch.set_status("")
 
-    notch.on_highlight_requested = toggle_annotation
+    notch.on_highlight_requested = lambda: toggle_annotation(CaptureMode.ANNOTATE)
+    notch.on_point_requested = lambda: toggle_annotation(CaptureMode.POINT)
     notch.on_project_selected = orchestrator.set_project_dir
 
     def on_voice_result(text, capture_id):
@@ -204,6 +219,101 @@ def main():
     voice.error.connect(on_voice_error)
     # Reflect the real microphone state, including timeouts and cancellation.
     voice.listening_changed.connect(notch.set_recording)
+
+    def on_point_selected(x, y):
+        """POINT mode: one click is a complete capture.
+
+        The click becomes the session's source annotation, so the same
+        pipeline that serves freehand captures serves point captures. The
+        overlay stays open afterwards, letting the user add more elements to
+        the same task. Resolution happens on a worker thread: UIA/OCR must
+        never block the desktop.
+        """
+        session = session_manager.active_session
+        if session is None:
+            return
+
+        capture_id = session.capture_id
+        try:
+            session_manager.transition_to(CaptureState.COLLECTING_CONTEXT)
+        except ValueError:
+            return
+
+        QTimer.singleShot(0, overlay.hide)  # never photograph our own overlay
+        cursor_x, cursor_y = _get_cursor_position()
+        window_title = _get_foreground_title()
+
+        def _resolve_and_capture():
+            from arrow.context.point_target import resolve_point_target
+
+            bounds = overlay.geometry()
+            desktop_bounds = {
+                "x": bounds.x(), "y": bounds.y(),
+                "width": bounds.width(), "height": bounds.height(),
+            }
+            target = resolve_point_target(x, y, desktop_bounds=desktop_bounds)
+
+            if not session_manager.is_active(capture_id):
+                return
+            latest_point["target"] = target
+
+            session.annotations = [
+                Annotation(
+                    id=f"ann_src_{capture_id}",
+                    type="rectangle",
+                    role="source",
+                    label=target.label or "Pointed element",
+                    geometry=dict(target.rect),
+                )
+            ]
+
+            try:
+                screenshot_service = ScreenshotService()
+                raw_img, screen_info, mapper = screenshot_service.capture_raw()
+            except Exception as e:
+                log.error("Point capture screenshot failed: %s", e)
+                if session_manager.fail_if_active(capture_id, f"screenshot failed: {e}"):
+                    ui_bridge.post_for(capture_id, lambda: notch.set_status("Capture failed"))
+                return
+
+            def _pipeline():
+                if not session_manager.is_active(capture_id):
+                    return
+                try:
+                    session_manager.transition_to(CaptureState.PROCESSING)
+                    result = orchestrator.run(
+                        session=session,
+                        rect=target.rect,
+                        instruction=current_voice_text,
+                        cursor=(cursor_x, cursor_y),
+                        window_title=window_title,
+                        raw_img=raw_img,
+                        screen_info=screen_info,
+                        mapper=mapper,
+                    )
+                except Exception as e:
+                    log.error("Point capture pipeline failed: %s", e)
+                    if session_manager.fail_if_active(capture_id, f"pipeline failed: {e}"):
+                        ui_bridge.post_for(capture_id, lambda: notch.set_status("Capture failed"))
+                    return
+
+                if result.error or not session_manager.is_active(capture_id):
+                    if result.error:
+                        session_manager.fail_if_active(capture_id, str(result.error))
+                        ui_bridge.post_for(capture_id, lambda: notch.set_status("Capture failed"))
+                    return
+
+                try:
+                    session_manager.transition_to(CaptureState.PREVIEW)
+                    session_manager.transition_to(CaptureState.READY)
+                except ValueError:
+                    return
+
+                ui_bridge.post_for(capture_id, lambda: _refresh_preview(capture_id))
+
+            threading.Thread(target=_pipeline, daemon=True).start()
+
+        threading.Thread(target=_resolve_and_capture, daemon=True).start()
 
     def on_selection(result):
         """Full capture flow when overlay selection completes."""
@@ -387,6 +497,7 @@ def main():
 
     overlay.selection_complete.connect(on_selection)
     overlay.cancelled.connect(on_overlay_cancelled)
+    overlay.point_selected.connect(on_point_selected)
 
     # -- Signal bridge to safely handle global hotkey from background listener thread --
     class HotkeyBridge(QObject):
