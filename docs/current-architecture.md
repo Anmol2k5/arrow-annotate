@@ -60,6 +60,34 @@ flowchart TD
     O -->|error| Q[transition FAILED → retry available]
 ```
 
+### Capture modes
+
+Both modes start the same `CaptureSession` and run the same
+`ContextOrchestrator.run` pipeline. `CaptureMode` only decides which overlay
+gesture produces the selection, so there is no second state machine.
+
+| | `ANNOTATE` (default) | `POINT` |
+|---|---|---|
+| Gesture | freehand source + optional destination stroke | one left click |
+| Selection signal | `selection_complete(rect)` | `point_selected(x, y)` |
+| Rect | stroke bounding box | resolved element bounds, else fallback crop |
+| Provenance | stroke geometry | `method` + `confidence` + `evidence` |
+| Finish with no gesture | full-screen capture | **cancel** (never a silent full-screen shot) |
+
+`arrow/context/point_target.py` resolves a point through the existing
+`NativeContextResolver` (UIA → OCR → unresolved). A resolved target uses the
+element's real bounds, clipped to the virtual desktop. An unresolved one falls
+back to a crop around the click and is recorded as `method="fallback"` with
+`confidence_kind="none"` and zero confidence, so a later consumer cannot read a
+guess as a detected element.
+
+Resolution and capture run on a worker thread; only the screenshot grab runs on
+the Qt main thread, because the overlay must be hidden first. In `POINT` mode
+the overlay stays visible after a click so several elements join one task.
+
+All point rectangles are virtual-desktop coordinates and may be negative when a
+monitor sits left of or above the primary display.
+
 ### State machine
 
 `arrow/capture/session.py` owns the single active `CaptureSession` and validates

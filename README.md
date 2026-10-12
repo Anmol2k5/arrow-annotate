@@ -41,15 +41,35 @@ loopback binding). Non-loopback hosts are rejected unless
 
 ## Usage
 
-- Hover over the top-center notch, select a project with the folder icon,
-  and click **Capture** (or press **Ctrl+Shift+Space**).
-- Draw a source region; draw a second stroke for an optional destination.
-  A blue gesture trail follows the pointer and fades over about 3 seconds,
-  while the red/green source/destination marks remain until you finish.
+Arrow has two capture modes. **Ctrl+Shift+Space** launches whichever mode is
+currently selected; the notch's **Capture** and **Point** buttons set it.
+
+### Point mode — one click is a capture
+
+- Click **⊙ Point**, then click any element on screen.
+- Arrow resolves the element through Windows UI Automation (and OCR where UIA
+  finds nothing), crops to its real bounds, and saves the capture.
+- The overlay stays open, so you can click several elements into the same task
+  before finishing.
+- When no element can be identified, Arrow still saves a crop around the click
+  and records the target as `fallback` with no confidence — it never reports a
+  guess as a detected element.
+- Press **Esc** to cancel. Finishing without clicking cancels rather than
+  saving a full-screen screenshot.
+
+### Annotate mode — freehand regions
+
+- Click **✦ Capture** (or press **Ctrl+Shift+Space**), then draw a source
+  region; draw a second stroke for an optional destination. A blue gesture
+  trail follows the pointer and fades over about 3 seconds, while the
+  red/green source/destination marks remain until you finish.
 - Press **Ctrl+Shift+Space** again or **Ctrl+Shift+Enter** to finish;
   press **Esc** to cancel the capture without taking a screenshot.
   Starting without drawing any stroke and finishing captures the full
   screen; cancelling never does.
+
+### Both modes
+
 - Voice recognition starts during capture when available; it uses Google
   speech recognition by default, which requires a network connection.
   Unrecognized speech no longer ends the capture. You can instead edit
