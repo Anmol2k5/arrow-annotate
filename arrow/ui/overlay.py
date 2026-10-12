@@ -86,7 +86,7 @@ class SelectionOverlay(QWidget):
     FADE_BUCKETS = 28
     MAX_VISIBLE_TRAIL_POINTS = 220
     # TipTour's layered highlighter: broad soft halo, mid bloom, saturated core.
-    TRAIL_LAYERS = ((54.0, 0.11), (32.0, 0.26), (18.0, 0.72))
+    TRAIL_LAYERS = ((38.0, 0.11), (22.0, 0.26), (12.0, 0.72))  # Slim, soft TipTour-style trail
 
     selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
     cancelled = pyqtSignal()  # emitted when the user aborts (Escape) — no selection follows

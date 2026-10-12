@@ -17,7 +17,7 @@ Arrow Annotate uses its **own PyQt6 drawing code**; no Swift/AppKit implementati
 - Screenwide Qt overlay, with freehand strokes captured in virtual-desktop coordinates.
 - Active gesture uses Catmull–Rom interpolation into a densified sample stream (bounded to 220 raw points for rendering; all raw points remain available to the capture pipeline).
 - **Continuous band rendering** (the TipTour anti-bead strategy): the densified trail is sliced into ordered tail→head opacity bands; each band is a single polyline sharing endpoints with its neighbours and is stroked once per glow layer with **flat caps**. This approximates TipTour's "one continuous path, trimmed into bands" approach — Qt has no path trimming — and avoids the stacked round-cap beads of per-segment rendering.
-- Three glow layers match the reference proportions: outer halo 54 px @ 0.11, middle bloom 32 px @ 0.26, saturated core 18 px @ 0.72, using the electric-blue palette (`#4F8EF7` core, `#E2F3FF` leading tip).
+- Three slimmer glow layers preserve the reference proportions: outer halo 38 px @ 0.11, middle bloom 22 px @ 0.26, saturated core 12 px @ 0.72, using the electric-blue palette (`#4F8EF7` core, `#E2F3FF` leading tip).
 - Opacity ramp: `progress ^ 1.8` (bright head, soft dissolving tail), monotonic along the path.
 - Committed gesture: full opacity for 1.6 seconds after release, then fades over 7 seconds while the overlay remains open. Finishing the capture closes the overlay immediately to keep it out of the screenshot. Persistent source/destination semantics remain after the transient glow fades.
 - Source/destination focus regions keep a subtle pulsing rounded outline (~0.35 Hz) and corner brackets (red/green semantic roles retained). Marker labels read "Current" / "Move here".
@@ -38,3 +38,10 @@ Run:
 Manual acceptance: draw a long curved gesture, release the mouse, confirm a soft electric-blue highlighter fades slowly; the desktop remains clearly visible while drawing; source/destination marks and focus brackets remain visible until the capture is completed. Verify that screenshot content and multi-monitor geometry remain correct.
 
 **Limitation:** Visual fidelity, actual frame rate and anti-aliasing on the Windows desktop require manual testing. CI verifies deterministic rendering math, band continuity along curves, and that the painter does not crash in offscreen tests.
+
+## Notch motion polish
+
+- A 315 ms cubic ease-in/out geometry transition replaces the earlier 245 ms exponential snap.
+- The collapsed pill remains visible while the container grows; screenshot cards fade in during the latter part of expansion.
+- Rapid hover re-entry does not restart an active expansion. A 110 ms mouse-exit grace period reduces accidental collapse at the expanding widget boundary.
+- The UI transition remains native PyQt6; performance and subjective motion smoothness still require visual Windows testing.

@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -60,7 +61,7 @@ AGENTS_W, AGENTS_H = 400, 400
 SCREENSHOTS_W, SCREENSHOTS_H = 760, 440
 
 TOP_OFFSET = 8
-ANIM_MS = 245
+ANIM_MS = 315  # Gentler expansion and collapse than the previous 245ms snap
 
 ACCENT_COLORS = [
     ("#7DD3FC", "Sky"), ("#34D399", "Emerald"), ("#A78BFA", "Violet"),
@@ -1078,22 +1079,43 @@ class DynamicNotch(QWidget):
         self._position_idle()
         self._anim_group = None
         self._auto_collapse_timer: Optional[QTimer] = None
+        # Short grace period prevents hover-boundary jitter during resize.
+        self._hover_exit_timer = QTimer(self)
+        self._hover_exit_timer.setSingleShot(True)
+        self._hover_exit_timer.setInterval(110)
+        self._hover_exit_timer.timeout.connect(self._collapse_if_pointer_away)
 
     # -- property for border-radius interpolation --
     def get_anim_progress(self):
         return self._anim_progress
 
     def set_anim_progress(self, v):
-        self._anim_progress = v
-        br = int(16 + (20 - 16) * v)
-        self._border_radius = br
-        self._container.setStyleSheet(f"""
-            #notchContainer {{
-                background: {NOTCH_BG};
-                border: 1px solid {NOTCH_BORDER};
-                border-radius: {br}px;
-            }}
-        """)
+        # Avoid a costly Qt style-sheet re-polish on every animation frame.
+        self._anim_progress = max(0.0, min(1.0, float(v)))
+        br = int(16 + 4 * self._anim_progress)
+        if br != self._border_radius:
+            self._border_radius = br
+            self._container.setStyleSheet(f"""
+                #notchContainer {{
+                    background: {NOTCH_BG};
+                    border: 1px solid {NOTCH_BORDER};
+                    border-radius: {br}px;
+                }}
+            """)
+
+        # Don't show the large card layout in an 80px-wide window. Reveal
+        # it once the expanding shell is wide enough, then fade it in.
+        reveal = self._anim_progress
+        if reveal >= 0.65:
+            if self._expanded_w.isHidden():
+                self._idle_w.hide()
+                self._expanded_w.show()
+            self._expanded_opacity.setOpacity(
+                min(1.0, (reveal - 0.65) / 0.30)
+            )
+        elif not self._expanded_w.isHidden():
+            self._expanded_w.hide()
+            self._idle_w.show()
 
     anim_progress = pyqtProperty(float, get_anim_progress, set_anim_progress)
 
@@ -1122,7 +1144,9 @@ class DynamicNotch(QWidget):
     # ------------------------------------------------------------------
     def _build_ui(self):
         self._main_layout = QVBoxLayout(self)
-        self._main_layout.setContentsMargins(24, 20, 24, 20)
+        # The idle window is only 80×32; large margins made Qt fight the
+        # geometry animation. The screenshots view provides its own padding.
+        self._main_layout.setContentsMargins(4, 4, 4, 4)
         self._main_layout.setSpacing(0)
 
         self._container = QFrame()
@@ -1171,6 +1195,9 @@ class DynamicNotch(QWidget):
         self._screens_view = ScreenshotsView()
         expanded_layout.addWidget(self._screens_view, 1)
 
+        self._expanded_opacity = QGraphicsOpacityEffect(self._expanded_w)
+        self._expanded_opacity.setOpacity(0.0)
+        self._expanded_w.setGraphicsEffect(self._expanded_opacity)
         self._expanded_w.hide()
         cl.addWidget(self._expanded_w, 1)
 
@@ -1216,12 +1243,10 @@ class DynamicNotch(QWidget):
     # State transitions
     # ------------------------------------------------------------------
     def expand(self, tab="screens"):
+        if self._state == "expanded":
+            return  # Hover re-entry must not restart a running animation.
         self._state = "expanded"
-
-        # Show expanded content immediately so it's visible during animation
-        self._idle_w.hide()
-        self._expanded_w.show()
-
+        self._hover_exit_timer.stop()
         self._expanded_size = (SCREENSHOTS_W, SCREENSHOTS_H)
         self._animate_to(self._calc_expanded_rect(), 1.0)
 
@@ -1230,10 +1255,8 @@ class DynamicNotch(QWidget):
             return
         self._state = "idle"
 
-        # Hide expanded content immediately for clean pill contraction
-        self._expanded_w.hide()
-        self._idle_w.show()
-
+        # Keep the expanded content visible while the shell contracts,
+        # then fade/switch it through set_anim_progress for a clean exit.
         # Recalculate idle rect in case screen geometry changed
         self._position_idle_rect()
         self._animate_to(self._idle_rect, 0.0)
@@ -1257,14 +1280,16 @@ class DynamicNotch(QWidget):
             self._anim_group = None
 
         geo_anim = QPropertyAnimation(self, b"geometry")
+        geo_anim.setStartValue(self.geometry())  # Handles mid-animation reversal.
         geo_anim.setEndValue(target_rect)
         geo_anim.setDuration(ANIM_MS)
-        geo_anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+        geo_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         br_anim = QPropertyAnimation(self, b"anim_progress")
+        br_anim.setStartValue(self._anim_progress)
         br_anim.setEndValue(target_progress)
         br_anim.setDuration(ANIM_MS)
-        br_anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+        br_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         self._anim_group = QParallelAnimationGroup(self)
         self._anim_group.addAnimation(geo_anim)
@@ -1275,7 +1300,7 @@ class DynamicNotch(QWidget):
     # Mouse events  (hover to expand)
     # ------------------------------------------------------------------
     def enterEvent(self, event):
-        # Cancel auto-collapse if we re-enter
+        self._hover_exit_timer.stop()
         if self._auto_collapse_timer is not None:
             self._auto_collapse_timer.stop()
         self._auto_collapse_timer = None
@@ -1284,8 +1309,12 @@ class DynamicNotch(QWidget):
 
     def leaveEvent(self, event):
         if not self._docked:
-            self.collapse()
+            self._hover_exit_timer.start()
         super().leaveEvent(event)
+
+    def _collapse_if_pointer_away(self):
+        if not self._docked and not self.underMouse():
+            self.collapse()
 
     # ------------------------------------------------------------------
     # Dock / Undock

@@ -29,12 +29,13 @@ def test_blue_pointer_palette():
 
 
 def test_trail_layers_are_ordered_halo_to_core():
-    """Outer halo is widest/dimmest; the core is narrowest and most opaque."""
+    """The thinner profile still has a readable core and soft outer halo."""
     layers = SelectionOverlay.TRAIL_LAYERS
     widths = [w for w, _ in layers]
     opacities = [o for _, o in layers]
     assert widths == sorted(widths, reverse=True)
     assert opacities == sorted(opacities)
+    assert widths == [38.0, 22.0, 12.0]
     assert opacities[-1] >= 0.6, "core stroke must stay clearly visible"
 
 
