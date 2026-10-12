@@ -23,6 +23,9 @@ class CaptureRecord(BaseModel):
     accessibility: str = ""
     selected_text: str = ""
     bounding_box: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Point Mode provenance: how the target was resolved, its confidence and
+    # the evidence behind it. Absent for freehand captures.
+    target: Optional[Dict[str, Any]] = None
     agentation_status: str = ""
     window_title: str = ""
     change_request: Optional[Dict[str, Any]] = None

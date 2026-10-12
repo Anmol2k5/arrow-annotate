@@ -51,6 +51,19 @@ def test_missing_callback_does_not_raise(view):
     """A notch without the handler must degrade, not crash the UI thread."""
     view._point()  # must not raise
     view._highlight()  # must not raise
+    view._new_task()  # must not raise
+    view._copy_task()  # must not raise
+
+
+def test_task_buttons_are_wired(view):
+    seen = []
+    parent = view.parent()
+    parent.on_new_task_requested = lambda: seen.append("new_task")
+    parent.on_copy_task_requested = lambda: seen.append("copy_task")
+
+    view._new_task()
+    view._copy_task()
+    assert seen == ["new_task", "copy_task"]
 
 
 def test_point_and_capture_are_distinct_actions(view):

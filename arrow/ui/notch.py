@@ -796,6 +796,42 @@ class ScreenshotsView(QWidget):
         point_btn.clicked.connect(self._point)
         pill_layout.addWidget(point_btn)
 
+        task_btn = QPushButton("+ Task")
+        task_btn.setToolTip("Group the next captures under one instruction")
+        task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        task_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        task_btn.clicked.connect(self._new_task)
+        pill_layout.addWidget(task_btn)
+
+        copy_task_btn = QPushButton("Copy task")
+        copy_task_btn.setToolTip("Copy the active task as Markdown for an AI agent")
+        copy_task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_task_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        copy_task_btn.clicked.connect(self._copy_task)
+        pill_layout.addWidget(copy_task_btn)
+
         top.addWidget(pill_frame)
         wordmark = QLabel("ARROW   /   ANNOTATE")
         wordmark.setStyleSheet(
@@ -999,6 +1035,16 @@ class ScreenshotsView(QWidget):
         parent_notch = self.window()
         if hasattr(parent_notch, 'on_point_requested'):
             parent_notch.on_point_requested()
+
+    def _new_task(self):
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_new_task_requested'):
+            parent_notch.on_new_task_requested()
+
+    def _copy_task(self):
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_copy_task_requested'):
+            parent_notch.on_copy_task_requested()
 
     def _copy_all(self):
         try:

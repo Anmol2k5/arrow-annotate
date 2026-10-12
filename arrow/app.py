@@ -18,6 +18,7 @@ from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
 from arrow.storage.settings import get_project_dir
+from arrow.storage.task_repository import TaskRepository
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.voice_input import VoiceInput
@@ -83,12 +84,14 @@ def main():
 
     # -- Setup Capture Store --
     capture_store = CaptureStore()
+    task_repository = TaskRepository()
 
     # -- Setup the capture pipeline (one orchestrator for all capture flows) --
     orchestrator = ContextOrchestrator(
         store=capture_store,
         ws_bridge=server.ws_bridge,
         project_dir=get_project_dir(),
+        task_repo=task_repository,
     )
 
     # -- Setup Highlight Overlay & Voice Input --
@@ -123,6 +126,32 @@ def main():
         nonlocal capture_mode
         capture_mode = CaptureMode(mode)
         overlay.set_capture_mode(capture_mode)
+
+    def new_task():
+        """Start grouping subsequent captures under one instruction."""
+        task_id = task_repository.create_task(
+            project_path=orchestrator.project_dir,
+        )
+        orchestrator.set_active_task(task_id)
+        notch.set_status(f"Task {task_id[-6:]} started")
+        return task_id
+
+    def copy_task_context():
+        """Copy the active task as agent-readable Markdown.
+
+        Only ever reports what capture evidence supports.
+        """
+        task = None
+        task_id = orchestrator.active_task_id
+        if task_id:
+            task = task_repository.get_task(task_id)
+        if task is None:
+            task = task_repository.get_latest_task()
+        if task is None:
+            notch.set_status("No task to copy yet")
+            return
+        QApplication.clipboard().setText(task.to_markdown())
+        notch.set_status(f"Copied task {task.task_id[-6:]}")
 
     def toggle_annotation(mode: Optional[CaptureMode] = None):
         nonlocal is_annotating, current_voice_text, last_toggle_time
@@ -199,6 +228,8 @@ def main():
     notch.on_highlight_requested = lambda: toggle_annotation(CaptureMode.ANNOTATE)
     notch.on_point_requested = lambda: toggle_annotation(CaptureMode.POINT)
     notch.on_project_selected = orchestrator.set_project_dir
+    notch.on_new_task_requested = new_task
+    notch.on_copy_task_requested = copy_task_context
 
     def on_voice_result(text, capture_id):
         nonlocal current_voice_text, is_annotating

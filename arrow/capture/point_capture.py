@@ -187,6 +187,7 @@ class PointCaptureCoordinator:
                     raw_img=raw_img,
                     screen_info=screen_info,
                     mapper=mapper,
+                    target=target.to_dict(),
                 )
             except Exception as e:
                 log.error("Point capture pipeline failed: %s", e)
