@@ -115,6 +115,35 @@ integration may report offline while local screenshots remain available.
 The companion browser extension lets you annotate live web pages the same
 way; captures flow through the same local pipeline.
 
+## Letting an agent point at your screen
+
+Arrow can animate a blue pointer at an element so an agent can show you where
+it means, and — only with your explicit approval — perform one bounded action.
+
+**This is off by default.** The agent endpoints require an opt-in capability:
+
+```env
+# .env
+ARROW_ENABLED_CAPABILITIES=control_native
+```
+
+Until you set that, `/agent/preview` and `/agent/action` return 403 and an
+agent cannot draw a pointer or ask for anything. With it enabled:
+
+- `arrow_preview_target` moves the pointer. It **never** clicks.
+- `arrow_request_action` raises an Allow/Deny prompt and returns
+  `awaiting_approval`. Nothing happens until you decide.
+- Allow is **single use and expires in 45 seconds**. It is bound to one
+  action, one target and the foreground window at the time you approved it.
+- Deny, Stop, an expired approval, a changed window, or a target that can no
+  longer be identified all execute **nothing**.
+- `arrow_stop_agent` cancels everything pending immediately.
+
+Arrow has no arbitrary-command path: action payloads carrying `command`,
+`shell` or `args` are refused. See [`docs/security-review.md`](docs/security-review.md).
+
+## Documentation
+
 ## Browser extension setup
 
 1. Open `chrome://extensions`, enable Developer mode.
@@ -129,6 +158,18 @@ way; captures flow through the same local pipeline.
 4. The extension requests `activeTab`, `storage` and `scripting`; its host
    permissions are loopback-only. Page access is optional and per-site: click
    "Allow access to this site" in the popup for sites you want to annotate.
+
+## Building a Windows executable
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean arrow.spec
+```
+
+Produces `dist\ArrowAnnotate\ArrowAnnotate.exe` (ship the whole folder).
+User data stays under `ARROW_HOME`, never beside the binary, so it is safe to
+install under Program Files. See
+[`docs/building-windows.md`](docs/building-windows.md).
 
 ## Privacy
 

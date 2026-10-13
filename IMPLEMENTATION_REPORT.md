@@ -146,13 +146,70 @@ rendering approach to PyQt6 (`arrow/ui/overlay.py`):
 - `mypy arrow` → `Success: no issues found in 49 source files` with no
   blanket suppressions. (G3)
 
+## Phase 8 - Screen-aware companion (Point Mode through permissioned actions)
+
+- **Point Mode** (`arrow/context/point_target.py`): one click is one capture.
+  Resolves through the existing `NativeContextResolver` (UIA → OCR) and records
+  honest provenance. An unresolved target falls back to a clipped crop labelled
+  `fallback` / confidence `none`, never presented as a detection.
+- **Point lifecycle** (`arrow/capture/point_capture.py`): the GUI thread
+  snapshots every mutable input into a frozen `PointCaptureRequest` and tears
+  the overlay down *synchronously* before the worker spawns, so the captured
+  pixels cannot depend on scheduling and no worker ever touches a Qt widget.
+- **TaskBundles**: migration 3 adds `tasks`/`task_captures`; additive and
+  nullable, so pre-existing captures stay valid. One capture belongs to at most
+  one task, so deleting a task cannot orphan an asset. Exports a versioned JSON
+  manifest and agent-readable Markdown.
+- **MCP handoff**: task-aware tools plus `arrow_get_capture_image`, which
+  returns real MCP *image* content. Base64 inside a text block is not viewable
+  by an agent. Verified against a real Claude Code 2.1.205 client and a real
+  stdio round-trip.
+- **Agent pointer** (`arrow/ui/agent_pointer.py`): damped spring, bounded
+  timestep, pure physics separated from rendering so the whole trajectory is
+  testable. Click-through; never moves the physical mouse.
+- **Permissioned actions** (`arrow/server/agent_actions.py`): single-use,
+  expiring approvals bound to one action, one target and the foreground
+  window, revalidated live before acting. Off by default behind
+  `CONTROL_NATIVE`. No arbitrary-command path.
+- **Task shelf** (`arrow/ui/task_shelf.py`): multi-capture view with editing,
+  reordering, removal and honest agent-state labels.
+
+## Windows manual tests
+
+Performed on a real desktop (1920×1080, 125% scaling), driving the running app
+and reading the screen back:
+
+| Scenario | Result | Evidence |
+|---|---|---|
+| App launch | passed | binds 5001 + ws 5002, no tracebacks |
+| Notch renders | passed | idle capsule occludes VS Code behind it |
+| Notch stays on top | passed | z-index 2 of 23 |
+| Hover expansion | passed | (909,10,100,40) → (484,10,950,759) = 760×560 × 1.25 |
+| Hover collapse | passed | returns to idle rect |
+| Task shelf renders | passed | all controls visible |
+| 125% DPI | passed | sizes are exactly logical × 1.25 |
+| Packaged exe launches | passed | stayed running |
+
+Two real defects were found on screen and fixed; neither was visible to unit
+tests, because Qt silently clips an oversized layout instead of raising:
+
+1. The task shelf's footer was cut off at the notch's bottom edge.
+2. The task row overflowed the right edge, truncating `+ Task`.
+
+Both now have regression tests.
+
+**Still unverified:** Point Mode against a real app; a populated shelf on
+screen; the agent pointer watched moving; the Allow/Deny panel displayed; the
+global hotkey (synthetic key events did not trigger it here — cause unknown);
+voice; animation feel; multi-monitor (one display only); DPI 100/150/200%.
+
 ## Test & verification infrastructure
 
-- `tests/` grew to **345 passing tests**; new suites: config, share
-  tokens, crop geometry, screenshot upload, threading, voice, agentation,
-  notch status, hotkey, trail fade (band continuity, layer ordering),
-  overlay cancel/finish semantics, context file mirroring, extension
-  background state machine (14 vm tests).
+- `tests/` grew to **598 passing tests**; new suites: config propagation,
+  point lifecycle, point mode, point overlay, tasks, point+task integration,
+  MCP tasks, agent pointer, agent pointer integration, agent actions, task
+  shelf, notch modes, plus the extension background state machine (14 vm
+  tests).
 - `GATES.md`: 19 outcome-focused gates with machine-checkable oracles
   (G0–G16 + G18 met with freshly re-verified evidence; G17 manual);
   unlazy gate ledger keeps them honest.
@@ -163,9 +220,18 @@ rendering approach to PyQt6 (`arrow/ui/overlay.py`):
 
 ## Not done / open
 
-- G17 (manual GUI smoke run) needs a human on a real desktop session;
-  hotkeys, live mic, and the Chrome extension handshake are unit-tested but
-  not exercised live by an agent.
+- **Global hotkey unproven.** Synthetic key events did not trigger
+  Ctrl+Shift+Space in this environment. Whether that is an injected-input
+  limitation or a real defect is unknown; it needs a human press.
+- **No audit log file** for executed agent actions. Outcomes are in memory and
+  readable via `arrow_action_status`, but do not survive a restart.
+- **No code signing** on the Windows executable; SmartScreen warns on first run.
+- **No icon** is bundled; Windows shows the default application icon.
+- **No `click_target` rollback.** Arrow moves the real cursor and cannot undo it
+  if an action turns out to be wrong.
+- Codex is not installed on the verification machine, so its MCP setup
+  instructions are unverified.
+- Packaging was produced and launched on one machine only.
 - `AUDIT_REPORT.md` items deliberately left unchecked: project-scoped
   Agentation sessions (#42), hotkey-registration status surface (#43),
   server polling status (#44), `bluely://desktop` deep link (#53),
