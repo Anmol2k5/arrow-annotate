@@ -210,6 +210,9 @@ def main():
             project_path=orchestrator.project_dir,
         )
         orchestrator.set_active_task(task_id)
+        shelf = getattr(notch, "task_shelf", None)
+        if shelf is not None:
+            shelf.select_task(task_id)
         notch.set_status(f"Task {task_id[-6:]} started")
         return task_id
 
@@ -228,6 +231,9 @@ def main():
             notch.set_status("No task to copy yet")
             return
         QApplication.clipboard().setText(task.to_markdown())
+        shelf = getattr(notch, "task_shelf", None)
+        if shelf is not None:
+            shelf.select_task(task.task_id)
         notch.set_status(f"Copied task {task.task_id[-6:]}")
 
     def toggle_annotation(mode: Optional[CaptureMode] = None):
@@ -517,6 +523,13 @@ def main():
         if not session_manager.is_active(capture_id):
             return
         notch.refresh_screenshots()
+        # A finished capture may have joined the active task; resync the shelf.
+        shelf = getattr(notch, "task_shelf", None)
+        if shelf is not None:
+            if orchestrator.active_task_id:
+                shelf.select_task(orchestrator.active_task_id)
+            else:
+                shelf.refresh()
         notch.auto_expand_briefly()
 
     def _report_sent():

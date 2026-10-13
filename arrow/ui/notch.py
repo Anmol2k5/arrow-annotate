@@ -46,6 +46,8 @@ from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, set_project_dir
+from arrow.storage.task_repository import TaskRepository
+from arrow.ui.task_shelf import TaskShelf
 
 log = logging.getLogger("arrow.ui.notch")
 
@@ -58,7 +60,7 @@ NOTCH_BORDER = "rgba(140, 174, 233, 30)"
 IDLE_W, IDLE_H = 80, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
-SCREENSHOTS_W, SCREENSHOTS_H = 760, 440
+SCREENSHOTS_W, SCREENSHOTS_H = 760, 560  # taller: shelf sits under history
 
 TOP_OFFSET = 8
 ANIM_MS = 315  # Gentler expansion and collapse than the previous 245ms snap
@@ -1264,6 +1266,11 @@ class DynamicNotch(QWidget):
 
         self._screens_view = ScreenshotsView()
         expanded_layout.addWidget(self._screens_view, 1)
+
+        # Task shelf: multi-capture view over the active TaskBundle. Hosted
+        # here, implemented in arrow.ui.task_shelf so it stays testable.
+        self.task_shelf = TaskShelf(TaskRepository())
+        expanded_layout.addWidget(self.task_shelf, 1)
 
         self._expanded_opacity = QGraphicsOpacityEffect(self._expanded_w)
         self._expanded_opacity.setOpacity(0.0)
