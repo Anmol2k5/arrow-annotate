@@ -6,24 +6,41 @@ Branch: `fix/arrow-annotate-prelaunch`
 ## Python suite
 
 ```
-489 passed, 1 warning in 51.08s
+598 passed, 1 warning in 45.86s
 ```
 
 - The single warning is a pre-existing `mss.mss` deprecation in
   `arrow/server/server.py` and does not affect results.
-- Start of this pass (`a82b97d`): 389 passed.
-- Added this pass: **100 tests** (point lifecycle 19, tasks 30,
-  point+task integration 7, MCP tasks 21, agent pointer 22, notch modes 1).
+- Start of this phase (`a82b97d`): 389 passed.
+- Added in the previous phase: 100 tests. Added in this phase: **109**
+  (task shelf 33, agent actions 41, agent pointer integration 35).
 
 ### Suites added
 
 | File | Tests | Covers |
 |---|---|---|
+| `test_task_shelf.py` | 33 | Ordering, edit, removal, honest labels, fits-in-notch |
+| `test_agent_actions.py` | 41 | Allow/Deny, expiry, revalidation, injection, races |
+| `test_agent_pointer_integration.py` | 35 | HTTP auth/capability, approval handshake, Qt bridge |
 | `test_point_lifecycle.py` | 19 | Overlay teardown ordering, thread safety, state reconciliation |
 | `test_tasks.py` | 30 | TaskBundle persistence, ordering, edit, export, migration |
 | `test_point_task_integration.py` | 7 | Real point captures landing in one task, restart survival |
 | `test_mcp_tasks.py` | 21 | Task-aware MCP, real image content, honest status |
 | `test_agent_pointer.py` | 22 | Spring convergence, bounded timestep, stability |
+
+### Bugs found by these tests and fixed
+
+- `request()` cached `awaiting_approval` as a terminal outcome, so `status()`
+  could never report an expiry.
+- `decide()` pruned before lookup, making an expired approval
+  indistinguishable from one that never existed.
+- `decide()` rebuilt the request *from* the approval, so the `target_moved`
+  check was unreachable dead code. An `observe()` hook now re-resolves the live
+  target and refuses when it cannot be identified.
+- The MCP preview tool could not read a capture's resolved bounds: the target
+  lives in the capture's context, not the change-request row.
+- `/agent/preview` read `label` while the MCP schema documented `reason`.
+- Two layout defects found only by looking at a real screen (see below).
 
 ### Verified red-capable
 
@@ -59,15 +76,41 @@ Each fix was confirmed to fail before the change:
 - Codex integration — **Codex is not installed on this machine.** Its MCP
   setup doc is therefore unverified.
 
-### NOT verified — no interactive desktop session
+### Real Windows desktop (1920x1080, 125% scaling)
 
-- Point Mode against real Chrome / native Windows apps.
-- Live UIA/OCR target-resolution quality.
-- Agent pointer as actually rendered on screen (physics is unit-tested;
-  the painting path is untested).
-- Multi-monitor physical setup (negative coordinates are unit-tested only).
-- Voice recognition, notch animation feel, DPI 125/150/200%.
-- Any packaging or distributable build.
+An interactive session was available, so the app was launched and the screen
+read back programmatically. Verified:
+
+| Check | Evidence |
+|---|---|
+| Notch renders | Idle capsule visible top-centre, occluding VS Code behind it |
+| Notch stays above other apps | z-index 2 of 23 top-level visible windows |
+| Hover expansion | Window rect `(909,10,100,40)` → `(484,10,950,759)`, i.e. 760x560 logical x 1.25 |
+| Hover collapse | Returns to the idle rect |
+| Task shelf renders | Selector, title, instruction, footer all visible |
+| 125% DPI handling | Window sizes are exactly logical x 1.25 |
+| Packaged exe | `dist/ArrowAnnotate/ArrowAnnotate.exe` launched and stayed running |
+
+**Two real defects were found only this way**, because Qt silently clips an
+oversized layout instead of raising: the task shelf's footer was cut off at
+the notch's bottom edge, and the task row overflowed the right edge,
+truncating `+ Task`. Both fixed, both now covered by regression tests.
+
+Note on method: two earlier "failures" were my own DPI mistakes, not app bugs.
+A DPI-unaware capture script reports virtualised coordinates, so the notch
+appeared to be missing. Setting `SetProcessDpiAwarenessContext(-4)` before
+sampling showed it rendering correctly the whole time.
+
+### Still NOT verified
+
+- Point Mode's click→capture round trip against a real app.
+- A task shelf populated with captures, on screen.
+- The agent pointer watched moving; the Allow/Deny panel displayed.
+- The global hotkey — synthetic key events did not trigger it in this
+  environment. Cause unknown; needs a human press.
+- Live UIA/OCR resolution quality.
+- Multi-monitor (only one display present); DPI 100/150/200%.
+- Voice recognition; notch animation *feel*.
 
 ## Static checks
 

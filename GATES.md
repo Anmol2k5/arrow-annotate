@@ -95,4 +95,71 @@ Scope: take Arrow Annotate from the audited partial state to a verified, hardene
   EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\projects\bluely; path=f77c8548f2cb/56 entries; EXPECT=matched; output-sha256=6a44ac67f3984606178c8277ebbfd551311e0a64d71d16847a2ce984d7fbbb13; output-bytes=100
 
 - [ ] G17: end-to-end GUI capture flow exercised on a real Windows desktop session
-  EVIDENCE: pending
+  EVIDENCE: partial. Verified on 1920x1080 / 125% scaling: app launch, notch
+    rendering, notch stays above the foreground app (z-index 2 of 23), hover
+    expansion ((909,10,100,40) -> (484,10,950,759) = 760x560 logical x 1.25),
+    hover collapse, task shelf rendering, and packaged-exe launch. NOT
+    verified: the click->capture round trip, a populated shelf on screen, the
+    agent pointer watched moving, the Allow/Deny panel displayed, and the
+    global hotkey (synthetic key events did not trigger it here; cause
+    unknown, needs a human press). G17 stays open until a human completes the
+    capture round trip.
+
+- [x] G19: Point Mode tears the overlay down on the GUI thread before the
+  worker screenshots, so the capture cannot contain Arrow's own overlay
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_point_lifecycle.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 19 passed; proven red-capable (moving the worker dispatch
+    ahead of teardown turns 4 tests red)
+
+- [x] G20: an unresolved point target is reported as a fallback, never as a
+  detected element, and never fabricates an identity
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_point_mode.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 19 passed; asserts resolution_method=fallback with
+    confidence_kind=none and element=None
+
+- [x] G21: task bundles persist, order, edit and export valid JSON and Markdown
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_tasks.py tests/test_point_task_integration.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 37 passed; includes restart persistence and the
+    capture-history-survives-task-deletion rule
+
+- [x] G22: an existing MCP client can retrieve a task and see its screenshots
+  as real image content
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_mcp_tasks.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 21 passed. Additionally verified against a REAL Claude
+    Code 2.1.205 client (claude mcp list reported "Connected") and a REAL
+    stdio JSON-RPC round-trip to a separate server process, whose image block
+    decoded to a valid PNG signature.
+
+- [x] G23: no agent action executes without a live, matching, unexpired,
+  single-use approval bound to its target and foreground window
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_agent_actions.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 41 passed; covers deny, expiry, changed window, moved and
+    vanished target, Stop, 8-thread double-fire race, and command injection
+
+- [x] G24: agent endpoints are refused unless the user opted in, and refuse
+  rather than pretend when no desktop is attached
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_agent_pointer_integration.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 35 passed; 401 without a token, 403 without
+    CONTROL_NATIVE, 503 with no desktop, 409 on a refused decision
+
+- [x] G25: the task shelf fits inside the notch window and is not clipped
+  CHECK: .venv\Scripts\python.exe -m pytest -q tests/test_task_shelf.py
+  EXPECT: /^\d+ passed/m
+  EVIDENCE: exit=0; 33 passed. Found on a real 125%-scaled desktop: the
+    footer was clipped at the bottom and '+ Task' overflowed the right edge.
+    Both fixed; regression tests pin the shelf height and assert every
+    control ends inside the shelf.
+
+- [x] G26: a Windows distributable builds and launches
+  CHECK: .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean arrow.spec
+  EXPECT: dist/ArrowAnnotate/ArrowAnnotate.exe exists and launches
+  EVIDENCE: exit=0; 9.7 MB exe in a 342 MB folder; launched and stayed
+    running; ships no database or asset directories, because all user data
+    resolves through ARROW_HOME. NOT code-signed, and tested on one machine
+    only.
