@@ -14,11 +14,15 @@ from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureMode, CaptureState, SessionManager
 from arrow.context.orchestrator import ContextOrchestrator
 from arrow.core.threads import UiBridge
+from arrow.server.agent_actions import AgentActionError, AgentActions
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
 from arrow.storage.settings import get_project_dir
 from arrow.storage.task_repository import TaskRepository
+from arrow.ui.agent_bridge import AgentPointerBridge
+from arrow.ui.agent_pointer import AgentPointerWindow
+from arrow.ui.approval_panel import ApprovalPanel
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.voice_input import VoiceInput
@@ -103,6 +107,79 @@ def main():
 
     # -- Bridge for worker threads to touch the UI on the main thread --
     ui_bridge = UiBridge()
+
+    # -- Agent pointer (visual preview only) + approval bridge --
+    # The HTTP server runs on a worker thread; every widget call is marshalled
+    # through this bridge so the GUI thread is the only one touching Qt.
+    agent_pointer = AgentPointerWindow()
+    agent_bridge = AgentPointerBridge()
+
+    # Bounded executor. Only reached after a live, matching, unexpired approval
+    # has been consumed; it re-resolves the target and refuses if it moved.
+    def _execute_agent_action(request):
+        from PyQt6.QtGui import QCursor
+
+        from arrow.context.point_target import resolve_point_target
+
+        target = resolve_point_target(request.x, request.y)
+        if target.is_fallback:
+            raise AgentActionError(
+                "target_unverified",
+                "the element could not be re-identified; refusing to click "
+                "arbitrary coordinates",
+            )
+        if request.action_type == "click_target":
+            QCursor.setPos(int(target.x), int(target.y))
+        return {
+            "performed": request.action_type,
+            "x": target.x,
+            "y": target.y,
+            "resolution_method": target.method,
+        }
+
+    agent_actions = AgentActions(
+        executor=_execute_agent_action,
+        current_window=_get_foreground_title,
+    )
+
+    def _decide_agent_action(action_id, allow):
+        try:
+            agent_actions.decide(action_id, allow)
+        except AgentActionError as e:
+            log.info("Agent action %s refused: %s", action_id, e.reason)
+            notch.set_status(f"Agent action refused ({e.reason})")
+            agent_bridge.request_hide()
+
+    approval_panel = ApprovalPanel(_decide_agent_action)
+    approval_panel.hide()
+
+    def _on_approval(action_id, action_type, x, y, reason, expected_outcome):
+        approval_panel.request(
+            action_id, action_type, x, y, reason, expected_outcome
+        )
+
+    agent_bridge.attach(agent_pointer, _on_approval)
+
+    class _AgentHooks:
+        """Server-side callables. None means 'no desktop' -> refuse."""
+
+        preview = staticmethod(
+            lambda x, y, highlight, label: agent_bridge.request_preview(
+                x, y, highlight, label
+            )
+        )
+        hide = staticmethod(agent_bridge.request_hide)
+        actions = agent_actions
+        approval = staticmethod(
+            lambda req: agent_bridge.request_approval(
+                req.action_id, req.action_type, req.x, req.y,
+                req.reason, req.expected_outcome,
+            )
+        )
+
+    from arrow.server.server import app as flask_app
+
+    flask_app.config["AGENT_HOOKS"] = _AgentHooks()
 
     # -- Point Mode lifecycle (GUI-thread snapshot, worker pipeline) --
     point_capture = PointCaptureCoordinator(

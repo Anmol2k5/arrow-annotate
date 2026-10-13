@@ -20,6 +20,7 @@ from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
 from arrow.core.config import get_config, port_available, resolve_screenshots_dir
+from arrow.server.agent_actions import AgentActionError, parse_action, sanitise_highlight
 from arrow.server.screenshots import (
     UploadError,
     crop_box_for_monitors,
@@ -384,6 +385,155 @@ def save_screenshot():
         "format": fmt.lower(),
         "annotation": data.get("annotation", ""),
     })
+
+
+# ---------------------------------------------------------------------------
+# Agent control surface (visual preview + explicit approvals)
+# ---------------------------------------------------------------------------
+# Preview is *visual only*: it can draw the agent pointer and nothing else.
+# It deliberately shares no code path with action execution, so granting a
+# preview can never be escalated into a click.
+
+PREVIEW_ACTIONS = {"preview_target", "highlight_target", "capture_screenshot"}
+CLICK_ACTIONS = {"click_target", "scroll_target"}
+
+
+def _agent_hooks():
+    """Hooks installed by the running desktop app.
+
+    Absent when the HTTP server runs without a GUI (tests, headless), in which
+    case every agent endpoint refuses rather than pretending to work.
+    """
+    return app.config.get("AGENT_HOOKS")
+
+
+@app.route("/agent/preview", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
+def agent_preview():
+    """Draw the agent pointer at a screen point. Never clicks anything."""
+    data = request.get_json(silent=True) or {}
+    hooks = _agent_hooks()
+    if hooks is None or hooks.preview is None:
+        return jsonify({
+            "ok": False,
+            "reason": "no_desktop",
+            "detail": "Arrow is not running with a desktop overlay.",
+        }), 503
+
+    try:
+        x, y = int(data["x"]), int(data["y"])
+        highlight = sanitise_highlight(data.get("highlight"))
+    except KeyError:
+        return jsonify({"ok": False, "reason": "malformed_payload",
+                        "detail": "x and y are required"}), 400
+    except AgentActionError as e:
+        return jsonify(e.to_dict()), 400
+
+    try:
+        hooks.preview(x, y, highlight, str(data.get("label") or data.get("reason") or ""))
+    except Exception as e:  # noqa: BLE001 - GUI boundary must not 500 silently
+        log.warning("Agent preview failed: %s", e)
+        return jsonify({"ok": False, "reason": "preview_failed",
+                        "detail": str(e)}), 500
+    return jsonify({"ok": True, "state": "previewed", "x": x, "y": y,
+                    "highlight": highlight})
+
+
+@app.route("/agent/action", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
+def agent_action_request():
+    """Record an action awaiting the user's Allow/Deny decision."""
+    hooks = _agent_hooks()
+    if hooks is None or hooks.actions is None or hooks.approval is None:
+        return jsonify({"ok": False, "reason": "no_desktop"}), 503
+
+    data = request.get_json(silent=True) or {}
+    action_type = data.get("action_type")
+    allowed = PREVIEW_ACTIONS | CLICK_ACTIONS
+    try:
+        if action_type in PREVIEW_ACTIONS:
+            # Purely visual: resolve and draw, still without clicking.
+            x, y = int(data["x"]), int(data["y"])
+            highlight = sanitise_highlight(data.get("highlight"))
+            if hooks.preview is None:
+                raise AgentActionError("no_desktop", "no preview available")
+            hooks.preview(x, y, highlight, str(data.get("label") or data.get("reason") or ""))
+            return jsonify({"ok": True, "state": "previewed", "x": x, "y": y,
+                            "note": "visual preview only; nothing was clicked"})
+        request_obj = parse_action(data, allowed)
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "reason": "malformed_payload"}), 400
+    except AgentActionError as e:
+        return jsonify(e.to_dict()), 400
+
+    try:
+        result = hooks.actions.request(request_obj)
+    except AgentActionError as e:
+        return jsonify(e.to_dict()), 400
+    # Surface it to the user. Showing the prompt is not permission: only the
+    # explicit Allow callback below can ever execute anything.
+    if hooks.approval is not None:
+        try:
+            hooks.approval(request_obj)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not surface approval prompt: %s", e)
+    return jsonify(result), 202
+
+
+@app.route("/agent/action/<action_id>", methods=["GET"])
+@require_capability(Capability.CONTROL_NATIVE)
+def agent_action_status(action_id):
+    """Report the state of an action. Never decides anything."""
+    hooks = _agent_hooks()
+    if hooks is None or hooks.actions is None:
+        return jsonify({"ok": False, "reason": "no_desktop"}), 503
+    state = hooks.actions.status(action_id)
+    if state is None:
+        return jsonify({
+            "ok": False,
+            "reason": "unknown_action",
+            "detail": "no such action; it was denied, expired or already ran",
+        }), 404
+    return jsonify(state)
+
+
+@app.route("/agent/action/<action_id>", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
+def agent_action_decide(action_id):
+    """Apply the user's Allow/Deny decision to a pending action."""
+    hooks = _agent_hooks()
+    if hooks is None or hooks.actions is None:
+        return jsonify({"ok": False, "reason": "no_desktop"}), 503
+
+    data = request.get_json(silent=True) or {}
+    allow = data.get("allow")
+    if not isinstance(allow, bool):
+        return jsonify({"ok": False, "reason": "malformed_payload",
+                        "detail": "allow must be a boolean"}), 400
+
+    try:
+        result = hooks.actions.decide(action_id, allow)
+    except AgentActionError as e:
+        # 409: the request was understood but refused (expired/moved/stopped).
+        return jsonify(e.to_dict()), 409
+    return jsonify(result)
+
+
+@app.route("/agent/stop", methods=["POST"])
+@require_capability(Capability.CONTROL_NATIVE)
+def agent_stop():
+    """Stop immediately: drop every pending approval and hide the pointer."""
+    hooks = _agent_hooks()
+    cancelled = 0
+    if hooks is not None:
+        if hooks.actions is not None:
+            cancelled = hooks.actions.stop()
+        if hooks.hide is not None:
+            try:
+                hooks.hide()
+            except Exception as e:  # noqa: BLE001
+                log.warning("hiding agent pointer failed: %s", e)
+    return jsonify({"ok": True, "cancelled": cancelled})
 
 
 def _resolve_target(action: str, target: str, x, y):

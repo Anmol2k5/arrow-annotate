@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from arrow.storage.repository import Repository
 
@@ -253,13 +253,172 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "name": "arrow_preview_target",
+        "description": (
+            "blue pointer at it. Visual only: this never clicks, never moves "
+            "the mouse and never changes anything. Provide coordinates, or a "
+            "capture_id from a task to reuse that capture's resolved bounds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Screen X in virtual-desktop coordinates"},
+                "y": {"type": "integer", "description": "Screen Y in virtual-desktop coordinates"},
+                "capture_id": {
+                    "type": "string",
+                    "description": "Reuse a capture's resolved target bounds instead of x/y.",
+                },
+                "reason": {"type": "string", "description": "Shown to the user, e.g. 'the search button'"},
+            },
+        },
+    },
+    {
+        "name": "arrow_request_action",
+        "description": (
+            "Ask the user to ALLOW or DENY one bounded screen action "
+            "(click_target, scroll_target). This only raises a prompt and "
+            "returns 'awaiting_approval'. It never performs anything; poll "
+            "arrow_action_status for the outcome. Arrow refuses to act when "
+            "the target cannot be re-identified."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action_type": {"type": "string", "enum": ["click_target", "scroll_target"]},
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+                "window_title": {
+                    "type": "string",
+                    "description": "Foreground window title the action is approved for. "
+                                   "Arrow aborts if focus changes.",
+                },
+                "reason": {"type": "string"},
+                "expected_outcome": {"type": "string"},
+            },
+            "required": ["action_type", "x", "y"],
+        },
+    },
+    {
+        "name": "arrow_action_status",
+        "description": (
+            "Check the outcome of an action previously requested with "
+            "arrow_request_action. Reports awaiting_approval, denied, "
+            "executed or refused-with-reason."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"action_id": {"type": "string"}},
+            "required": ["action_id"],
+        },
+    },
+    {
+        "name": "arrow_stop_agent",
+        "description": "Immediately cancel every pending agent approval and hide the agent pointer.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
+class DesktopClient:
+    """Talks to the running desktop app over the authenticated local API.
+
+    Separate process: the MCP server may be driven from a different terminal
+    than the app, so anything visual must go over HTTP. Requests are refused
+    rather than faked when the app is not running or refuses the capability.
+    """
+
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 5.0):
+        self._base_url = base_url
+        self.timeout = timeout
+
+    @property
+    def base_url(self) -> str:
+        if self._base_url is None:
+            from arrow.core.config import get_config
+
+            self._base_url = get_config().base_url
+        return self._base_url
+
+    def _token(self) -> str:
+        from arrow.server.security import TokenManager
+
+        return TokenManager().get_or_create()
+
+    def get(self, path: str) -> dict:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {self._token()}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            try:
+                detail = _json.loads(body)
+            except ValueError:
+                detail = {"error": body[:200]}
+            detail.setdefault("http_status", e.code)
+            return detail
+        except Exception as e:  # noqa: BLE001
+            return {
+                "ok": False,
+                "reason": "desktop_unreachable",
+                "detail": f"Could not reach the Arrow desktop app: {e}",
+            }
+
+    def post(self, path: str, payload: dict) -> dict:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token()}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            try:
+                detail = _json.loads(body)
+            except ValueError:
+                detail = {"error": body[:200]}
+            detail.setdefault("http_status", e.code)
+            return detail
+        except Exception as e:  # noqa: BLE001 - app may simply not be running
+            return {
+                "ok": False,
+                "reason": "desktop_unreachable",
+                "detail": (
+                    f"Could not reach the Arrow desktop app at {self.base_url}: {e}. "
+                    "Start Arrow first; screenshots and tasks still work without it."
+                ),
+            }
+
+
 class ArrowTools:
-    def __init__(self, repository: Repository, task_repository: Any = None):
+    def __init__(
+        self,
+        repository: Repository,
+        task_repository: Any = None,
+        desktop: Any = None,
+    ):
         self.repo = repository
         self._task_repo = task_repository
+        self._desktop = desktop
         self._handlers: dict[str, Callable[[dict], Any]] = {
             "arrow_get_latest_change_request": self._latest,
             "arrow_get_change_request": self._get,
@@ -282,7 +441,17 @@ class ArrowTools:
             "arrow_list_task_captures": self._task_captures,
             "arrow_get_capture_image": self._capture_image,
             "arrow_get_fresh_screen_context": self._fresh_screen,
+            "arrow_preview_target": self._preview_target,
+            "arrow_request_action": self._request_action,
+            "arrow_action_status": self._action_status,
+            "arrow_stop_agent": self._stop_agent,
         }
+
+    @property
+    def desktop(self):
+        if self._desktop is None:
+            self._desktop = DesktopClient()
+        return self._desktop
 
     @property
     def tasks(self):
@@ -553,5 +722,104 @@ class ArrowTools:
             {"type": "image", "data": blob, "mimeType": "image/png"},
         ])
 
+    # -- agent pointer + approved actions ---------------------------------
 
-__all__ = ["ArrowTools", "RawContent", "ToolError", "TOOL_SCHEMAS", "MAX_IMAGE_BYTES"]
+    def _preview_bounds(self, args: dict) -> dict:
+        """Prefer a capture's resolved bounds; else use the given point."""
+        capture_id = args.get("capture_id")
+        if capture_id:
+            # The resolved target lives in the capture's context, not in the
+            # change-request row, so read it via the capture store.
+            from arrow.storage.capture_store import CaptureStore
+
+            self._require({"capture_id": capture_id})  # existence + authz check
+            record = CaptureStore(self.repo._db_path).get(capture_id)
+            target = (record.target if record else None) or {}
+            bounds = target.get("bounds")
+            if bounds:
+                return {
+                    "x": int(bounds["x"]),
+                    "y": int(bounds["y"]),
+                    "highlight": [
+                        int(bounds["x"]), int(bounds["y"]),
+                        int(bounds["width"]), int(bounds["height"]),
+                    ],
+                    "source": f"capture:{capture_id}",
+                    "resolution_method": target.get("resolution_method", "unknown"),
+                }
+            raise ToolError(
+                f"Capture {capture_id} has no resolved bounds; pass x and y instead."
+            )
+        x, y = args.get("x"), args.get("y")
+        if x is None or y is None:
+            raise ToolError("Provide either capture_id, or both x and y")
+        if isinstance(x, bool) or isinstance(y, bool):
+            raise ToolError("x and y must be integers")
+        return {"x": int(x), "y": int(y), "highlight": None, "source": "arguments"}
+
+    def _preview_target(self, args: dict) -> Any:
+        """Visual only. Returns exactly what the desktop reported."""
+        where = self._preview_bounds(args)
+        result = self.desktop.post(
+            "/agent/preview",
+            {
+                "x": where["x"],
+                "y": where["y"],
+                "highlight": where["highlight"],
+                "label": args.get("reason", ""),
+            },
+        )
+        if not result.get("ok"):
+            raise ToolError(
+                result.get("detail") or result.get("reason") or "Preview refused."
+            )
+        return {
+            "ok": True,
+            "previewed_at": where,
+            "clicked": False,
+            "note": "Pointer animated to the point. Nothing was clicked.",
+        }
+
+    def _request_action(self, args: dict) -> Any:
+        payload = {
+            "action_type": args.get("action_type"),
+            "x": args.get("x"),
+            "y": args.get("y"),
+            "window_title": args.get("window_title"),
+            "reason": args.get("reason", ""),
+            "expected_outcome": args.get("expected_outcome", ""),
+        }
+        result = self.desktop.post("/agent/action", payload)
+        if not result.get("ok"):
+            raise ToolError(
+                result.get("detail") or result.get("reason") or "Action refused."
+            )
+        return {
+            **result,
+            "executed": False,
+            "note": "Waiting on the user. Poll arrow_action_status for the outcome.",
+        }
+
+    def _action_status(self, args: dict) -> Any:
+        action_id = args.get("action_id")
+        if not action_id:
+            raise ToolError("action_id is required")
+        result = self.desktop.get(f"/agent/action/{action_id}")
+        if not result.get("ok"):
+            raise ToolError(
+                result.get("detail") or result.get("reason") or "Unknown action."
+            )
+        return result
+
+    def _stop_agent(self, args: dict) -> Any:
+        return self.desktop.post("/agent/stop", {})
+
+
+__all__ = [
+    "ArrowTools",
+    "DesktopClient",
+    "RawContent",
+    "ToolError",
+    "TOOL_SCHEMAS",
+    "MAX_IMAGE_BYTES",
+]
