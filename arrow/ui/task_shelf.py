@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -146,29 +147,36 @@ class TaskShelf(QWidget):
         self._task_id: Optional[str] = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 10, 14, 12)
-        root.setSpacing(8)
+        # This shelf shares the notch window with the capture history, so it
+        # must be willing to shrink in both axes: anything with a large
+        # minimum is silently clipped at the window edge rather than scaled.
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        root.setContentsMargins(12, 8, 12, 8)
+        root.setSpacing(6)
 
         # -- task selector + state -----------------------------------------
         top = QHBoxLayout()
         top.setSpacing(8)
 
         self.task_select = QComboBox()
-        self.task_select.setMinimumWidth(180)
+        self.task_select.setMinimumWidth(60)
+        # Ignored: a combo sized to its contents pushes the '+ Task' button
+        # past the notch's right edge instead of giving up width.
+        self.task_select.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
         self.task_select.currentIndexChanged.connect(self._on_task_changed)
         top.addWidget(QLabel("Task", self))
         top.addWidget(self.task_select, 1)
 
         self.state_label = QLabel("", self)
+        self.state_label.setMaximumWidth(120)
         self.state_label.setFont(QFont("Segoe UI", 8, QFont.Weight.DemiBold))
         self.state_label.setStyleSheet("color: #93A8C7; background: transparent;")
         top.addWidget(self.state_label)
-
-        self.new_btn = QPushButton("+ New", self)
-        self.new_btn.setToolTip("Start a new task")
-        self.new_btn.setStyleSheet(_BTN_QSS)
-        self.new_btn.clicked.connect(self._new_task)
-        top.addWidget(self.new_btn)
+        # No '+ Task' button here on purpose: the notch toolbar already has
+        # one, and a second copy overflowed the panel's right edge.
         root.addLayout(top)
 
         # -- title + instruction -------------------------------------------
@@ -189,7 +197,8 @@ class TaskShelf(QWidget):
         # -- capture shelf --------------------------------------------------
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
-        self._scroll.setFixedHeight(190)
+        self._scroll.setMinimumHeight(84)
+        self._scroll.setMaximumHeight(132)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(

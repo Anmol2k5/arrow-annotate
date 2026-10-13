@@ -60,7 +60,7 @@ NOTCH_BORDER = "rgba(140, 174, 233, 30)"
 IDLE_W, IDLE_H = 80, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
-SCREENSHOTS_W, SCREENSHOTS_H = 760, 560  # taller: shelf sits under history
+SCREENSHOTS_W, SCREENSHOTS_H = 760, 700  # history + task shelf must both fit
 
 TOP_OFFSET = 8
 ANIM_MS = 315  # Gentler expansion and collapse than the previous 245ms snap

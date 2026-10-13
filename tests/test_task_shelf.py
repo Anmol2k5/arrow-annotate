@@ -335,3 +335,71 @@ def test_refresh_emits_changed(qapp, shelf, repo):
     shelf.changed.connect(lambda: fired.append(1))
     shelf.refresh()
     assert fired
+
+
+# -- fitting inside the notch -----------------------------------------------
+
+
+def test_shelf_fits_the_notch_height(qapp, shelf, repo):
+    """Regression: the shelf overflowed the notch and clipped its footer.
+
+    The shelf shares the expanded notch window with the capture history, so
+    if it demands more height than the notch allows, Qt silently clips the
+    bottom row off instead of shrinking.
+    """
+    from arrow.ui.notch import SCREENSHOTS_H, TOP_OFFSET
+
+    tid = _three(repo)
+    shelf.select_task(tid)
+    qapp.processEvents()
+
+    available = SCREENSHOTS_H - 2 * TOP_OFFSET
+    assert shelf.sizeHint().height() <= available, (
+        f"shelf wants {shelf.sizeHint().height()}px but the notch offers "
+        f"{available}px; the footer would be clipped"
+    )
+
+
+def test_shelf_fits_the_notch_width(qapp, shelf, repo):
+    """Regression: the shelf was wider than the notch and clipped its right.
+
+    Found on a real 125%-scaled Windows desktop, where the task row ran
+    past the window edge and cut off the '+ Task' button.
+    """
+    from PyQt6.QtWidgets import QSizePolicy
+
+    from arrow.ui.notch import SCREENSHOTS_H, SCREENSHOTS_W
+
+    tid = _three(repo)
+    shelf.select_task(tid)
+    shelf.resize(SCREENSHOTS_W, SCREENSHOTS_H)
+    qapp.processEvents()
+
+    # Every visible control must end inside the shelf.
+    for name in ("task_select", "state_label", "title_edit", "instruction_edit",
+                 "copy_btn", "delete_btn"):
+        w = getattr(shelf, name)
+        right = w.mapTo(shelf, w.rect().topRight()).x()
+        assert right <= shelf.width(), (
+            f"{name} ends at x={right} but the shelf is {shelf.width()}px wide"
+        )
+
+    # A shelf that cannot shrink will overflow its host no matter how tall it is.
+    assert shelf.minimumWidth() == 0, "shelf must be allowed to shrink horizontally"
+    # The combo must give up width rather than push later controls off the edge.
+    assert shelf.task_select.sizePolicy().horizontalPolicy() == (
+        QSizePolicy.Policy.Ignored
+    ), "task combo must be shrinkable"
+
+
+def test_shelf_footer_stays_inside_its_own_widget(qapp, shelf, repo):
+    """The Copy/Delete row must be inside the shelf, not below it."""
+    tid = _three(repo)
+    shelf.select_task(tid)
+    shelf.resize(shelf.sizeHint())
+    qapp.processEvents()
+
+    footer_bottom = shelf.delete_btn.mapTo(shelf, shelf.delete_btn.rect().bottomLeft()).y()
+    assert footer_bottom <= shelf.height(), (
+        f"footer at y={footer_bottom} but shelf is only {shelf.height()}px tall"
+    )
