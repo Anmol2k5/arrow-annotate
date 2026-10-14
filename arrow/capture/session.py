@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -107,6 +108,7 @@ class SessionManager:
 
     def __init__(self) -> None:
         self._active_session: Optional[CaptureSession] = None
+        self._lock = threading.RLock()
 
     @property
     def active_session(self) -> Optional[CaptureSession]:
@@ -114,49 +116,55 @@ class SessionManager:
 
     def start_session(self, project_id: Optional[str] = None) -> CaptureSession:
         """Initializes and returns a new active capture session."""
-        if self._active_session and self._active_session.state not in self.FINAL_STATES and self._active_session.state != CaptureState.IDLE:
-            logger.warning(
-                "Starting a new session while an active one (%s) is in progress. Cancelling old session.",
-                self._active_session.capture_id
-            )
-            self.transition_to(CaptureState.CANCELLED)
+        with self._lock:
+            if self._active_session and self._active_session.state not in self.FINAL_STATES and self._active_session.state != CaptureState.IDLE:
+                logger.warning(
+                    "Starting a new session while an active one (%s) is in progress. Cancelling old session.",
+                    self._active_session.capture_id
+                )
+                self.transition_to(CaptureState.CANCELLED)
 
-        session = CaptureSession(project_id=project_id, state=CaptureState.IDLE)
-        self._active_session = session
-        self.transition_to(CaptureState.STARTING)
-        return session
+            session = CaptureSession(project_id=project_id, state=CaptureState.IDLE)
+            self._active_session = session
+            self.transition_to(CaptureState.STARTING)
+            return session
 
-    def transition_to(self, target_state: CaptureState) -> None:
+    def transition_to(self, target_state: CaptureState, capture_id: Optional[str] = None) -> None:
         """Validates and applies a state transition to the active session."""
-        if not self._active_session:
-            raise ValueError("No active session exists to transition.")
+        with self._lock:
+            if not self._active_session:
+                raise ValueError("No active session exists to transition.")
 
-        current = self._active_session.state
+            if capture_id is not None and self._active_session.capture_id != capture_id:
+                raise ValueError("Capture session is no longer active.")
+
+            current = self._active_session.state
         
-        # If target state is the same as current state, ignore (no-op)
-        if current == target_state:
-            return
+            # If target state is the same as current state, ignore (no-op)
+            if current == target_state:
+                return
 
-        allowed = self.ALLOWED_TRANSITIONS.get(current, set())
+            allowed = self.ALLOWED_TRANSITIONS.get(current, set())
         
-        # Explicitly allow transitioning to FAILED or CANCELLED from non-final states
-        is_abort = target_state in {CaptureState.FAILED, CaptureState.CANCELLED}
-        is_current_active = current not in self.FINAL_STATES and current != CaptureState.IDLE
+            # Explicitly allow transitioning to FAILED or CANCELLED from non-final states
+            is_abort = target_state in {CaptureState.FAILED, CaptureState.CANCELLED}
+            is_current_active = current not in self.FINAL_STATES and current != CaptureState.IDLE
 
-        if target_state not in allowed and not (is_abort and is_current_active):
-            err_msg = f"Invalid state transition: {current.value} -> {target_state.value}"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
+            if target_state not in allowed and not (is_abort and is_current_active):
+                err_msg = f"Invalid state transition: {current.value} -> {target_state.value}"
+                logger.error(err_msg)
+                raise ValueError(err_msg)
 
-        logger.info(
-            "Session %s transitioning: %s -> %s",
-            self._active_session.capture_id,
-            current.value,
-            target_state.value
-        )
-        self._active_session.state = target_state
-        self._active_session.update_timestamp()
+            logger.info(
+                "Session %s transitioning: %s -> %s",
+                self._active_session.capture_id,
+                current.value,
+                target_state.value
+            )
+            self._active_session.state = target_state
+            self._active_session.update_timestamp()
 
     def clear_session(self) -> None:
         """Clears the active session references."""
-        self._active_session = None
+        with self._lock:
+            self._active_session = None

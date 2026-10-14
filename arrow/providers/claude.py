@@ -32,6 +32,7 @@ class ClaudeProvider(BaseCLIProvider):
             self.cli_name,
             "-p",
             "--permission-mode", self.permission_mode,
+            "--",
             prompt,
         ]
 

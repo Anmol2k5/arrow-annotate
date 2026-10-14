@@ -37,6 +37,7 @@ from arrow.capture.screenshot_service import SCREENSHOTS_DIR, ScreenshotService
 from arrow.capture.session import Annotation, CaptureSession
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.repo_context import collect_repository_context
+from arrow.context.source_mapper import SourceMapper, element_context_from_browser
 from arrow.intent.compiler import CompilerInput, IntentCompiler
 from arrow.intent.schemas import ChangeRequest
 from arrow.storage.capture_store import CaptureStore
@@ -370,21 +371,11 @@ class ContextOrchestrator:
             "confidence": 0.9,
         }
 
-    @staticmethod
-    def _browser_mapping(element: dict) -> dict:
-        """Map a DOM element to a likely source file via React debug metadata."""
-        react = element.get("reactSource")
-        if react and react.get("fileName"):
-            components = (element.get("reactComponents") or "").split(" > ")
-            return {
-                "resolved": True,
-                "source_file": react["fileName"],
-                "source_line": react.get("lineNumber"),
-                "component": components[-1] if components else None,
-                "confidence": 0.8,
-                "evidence": ["Browser React debug source"],
-            }
-        return {}
+    def _browser_mapping(self, element: dict) -> dict:
+        """Verify browser metadata against the selected repository on disk."""
+        repo = collect_repository_context(self.project_dir)
+        root = repo.repository_root or self.project_dir
+        return SourceMapper(root).map(element_context_from_browser(element)).to_dict()
 
     def _native_resolve(self, rect: Tuple[float, float, float, float]) -> Optional[dict]:
         try:

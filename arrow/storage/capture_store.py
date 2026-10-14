@@ -3,6 +3,7 @@ import os
 from typing import Optional
 
 from arrow.storage.database import get_db_connection, init_db
+from arrow.storage.repository import Repository
 from arrow.storage.schemas import CaptureRecord
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,6 +43,11 @@ class CaptureStore:
             if record.screenshot_path:
                 conn.execute('INSERT INTO assets (capture_id, path, type) VALUES (?, ?, ?)',
                              (record.id, record.screenshot_path, 'screenshot'))
+            self._write_change_request(conn, record.id, record.change_request)
+            for asset_type, path in (record.change_request or {}).get('assets', {}).items():
+                if path:
+                    conn.execute('INSERT INTO assets (capture_id, path, type) VALUES (?, ?, ?)',
+                                 (record.id, os.path.abspath(path), asset_type.replace('_', '-')))
 
             # Store context
             conn.execute('DELETE FROM contexts WHERE capture_id = ?', (record.id,))
@@ -101,18 +107,7 @@ class CaptureStore:
         self.add(record)
 
     def delete(self, capture_id: str) -> None:
-        with get_db_connection(self._db_path) as conn:
-            # Get asset path to delete file from disk
-            asset_row = conn.execute("SELECT path FROM assets WHERE capture_id = ? AND type = 'screenshot'", (capture_id,)).fetchone()
-            if asset_row and asset_row['path'] and os.path.exists(asset_row['path']):
-                try:
-                    os.remove(asset_row['path'])
-                except OSError:
-                    pass
-            
-            # Deleting session triggers CASCADE DELETE on assets, contexts, annotations
-            conn.execute('DELETE FROM sessions WHERE capture_id = ?', (capture_id,))
-            conn.commit()
+        Repository(self._db_path).delete_capture(capture_id)
 
     def update_change_request(self, capture_id: str, change_request: Optional[dict],
                               annotation_text: Optional[str] = None) -> None:
@@ -133,12 +128,27 @@ class CaptureStore:
                 "UPDATE contexts SET data = ? WHERE capture_id = ?",
                 (json.dumps(cdata), capture_id),
             )
+            self._write_change_request(conn, capture_id, change_request)
             if annotation_text is not None:
                 conn.execute(
                     "UPDATE sessions SET voice_transcript = ? WHERE capture_id = ?",
                     (annotation_text, capture_id),
                 )
             conn.commit()
+
+    @staticmethod
+    def _write_change_request(conn, capture_id: str, change_request: Optional[dict]) -> None:
+        """Keep MCP's relational view in the same transaction as desktop context."""
+        if change_request is None:
+            conn.execute('DELETE FROM change_requests WHERE capture_id = ?', (capture_id,))
+            return
+        conn.execute('''
+            INSERT INTO change_requests (capture_id, created_at, updated_at, project_id, status, data)
+            SELECT capture_id, created_at, updated_at, project_id, 'ready', ?
+            FROM sessions WHERE capture_id = ?
+            ON CONFLICT(capture_id) DO UPDATE SET data=excluded.data,
+                updated_at=excluded.updated_at
+        ''', (json.dumps(change_request), capture_id))
 
     @staticmethod
     def _record_from_row(row, cdata: dict) -> CaptureRecord:

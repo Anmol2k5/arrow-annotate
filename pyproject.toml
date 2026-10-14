@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "arrow-annotate"
 version = "0.1.0"
@@ -9,15 +13,21 @@ dependencies = [
     "websockets>=12.0",
     "mss>=9.0.1",
     "Pillow",
-    "uiautomation>=2.0",
+    "uiautomation>=2.0; sys_platform == 'win32'",
     "rapidocr-onnxruntime",
     "numpy",
     "keyboard",
     "SpeechRecognition",
-    "PyAudio",
+    "PyAudio; sys_platform == 'win32'",
     "requests",
     "pydantic>=2.0",
 ]
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy", "pytest"]
+
+[tool.setuptools.packages.find]
+include = ["arrow", "arrow.*"]
 
 [tool.ruff]
 line-length = 120

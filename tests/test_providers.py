@@ -162,3 +162,31 @@ def test_confirm_command_allows_when_confirmed(tmp_path):
 
 def test_default_deny_returns_false():
     assert default_deny(SafetyCategory.PUSH, "git push") is False
+
+
+def test_codex_command_uses_explicit_sandbox_and_image_attachment(tmp_path):
+    image = tmp_path / 'annotated.png'
+    image.write_bytes(b'image')
+    provider = CodexProvider(which_fn=_which_yes)
+    command = provider.build_command(RunRequest(
+        capture_id='c', repository_path=str(tmp_path), prompt='--help', assets={'annotated': str(image)}))
+    assert command[command.index('--sandbox') + 1] == 'workspace-write'
+    assert command[command.index('--image') + 1] == str(image)
+    assert command[-2:] == ['--', '--help']
+
+
+def test_claude_prompt_cannot_be_interpreted_as_cli_option(tmp_path):
+    command = ClaudeProvider(which_fn=_which_yes).build_command(RunRequest(
+        capture_id='c', repository_path=str(tmp_path), prompt='--dangerously-skip-permissions'))
+    assert command[-2:] == ['--', '--dangerously-skip-permissions']
+
+
+def test_provider_cannot_replace_a_running_process(tmp_path):
+    import pytest
+    process = FakeProcess([])
+    provider = CodexProvider(which_fn=_which_yes, popen_fn=lambda *a, **k: process)
+    request = RunRequest(capture_id='c', repository_path=str(tmp_path), prompt='fix')
+    provider.start_run(request)
+    with pytest.raises(RuntimeError, match='already running'):
+        provider.start_run(request)
+    assert provider.get_status() == ProviderStatus.RUNNING

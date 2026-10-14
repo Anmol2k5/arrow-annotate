@@ -2,9 +2,9 @@
 Provider run orchestration for one-click sends (Phase 13 convenience).
 
 Turns a persisted ``change_request`` (from the orchestrator) into a
-:class:`RunRequest` for a direct Codex / Claude Code run. Runs are confined to
-the repository recorded in the change request; sensitive actions are denied by
-default by the shared provider plumbing.
+:class:`RunRequest` for a direct Codex / Claude Code run. Runs start in
+the repository recorded in the change request. Tool permissions and filesystem
+confinement are enforced by the selected CLI, not by prompt classification.
 """
 
 from __future__ import annotations

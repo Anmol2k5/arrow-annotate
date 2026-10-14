@@ -128,10 +128,36 @@ CREATE INDEX IF NOT EXISTS idx_change_requests_created ON change_requests(create
 CREATE INDEX IF NOT EXISTS idx_status_history_capture ON status_history(capture_id);
 """
 
+# Migration 3 — expose captures written by the desktop CaptureStore to MCP.
+# Older contexts contain a JSON-encoded change request inside their JSON data.
+_MIGRATION_3 = """
+INSERT OR IGNORE INTO change_requests
+    (capture_id, created_at, updated_at, project_id, status, data)
+SELECT s.capture_id, s.created_at, s.updated_at, s.project_id, 'ready',
+       json_extract(c.data, '$.change_request')
+FROM sessions s JOIN contexts c ON c.capture_id = s.capture_id
+WHERE json_valid(c.data)
+  AND json_valid(json_extract(c.data, '$.change_request'))
+  AND json_type(json_extract(c.data, '$.change_request')) = 'object';
+
+INSERT INTO assets (capture_id, path, type)
+SELECT cr.capture_id, a.value, replace(a.key, '_', '-')
+FROM change_requests cr, json_each(
+    CASE WHEN json_valid(cr.data) THEN cr.data ELSE '{}' END, '$.assets'
+) a
+WHERE a.type = 'text' AND a.value != ''
+  AND NOT EXISTS (
+      SELECT 1 FROM assets existing
+      WHERE existing.capture_id = cr.capture_id
+        AND existing.type = replace(a.key, '_', '-')
+  );
+"""
+
 # Ordered list of (version, sql). Version equals the target user_version.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
+    (3, _MIGRATION_3),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

@@ -13,11 +13,11 @@ def test_stroke_rect_basic():
     assert r == {"x": 10, "y": 120, "width": 220, "height": 220}
 
 
-def test_stroke_rect_clamps_negative_origin():
+def test_stroke_rect_preserves_negative_monitor_coordinates():
     pts = [QPointF(10, 10)]
     r = stroke_rect(pts, QPointF(-500, -500), pad=100)
-    assert r["x"] == 0
-    assert r["y"] == 0
+    assert r["x"] == -590
+    assert r["y"] == -590
     assert r["width"] == 200  # single point: 0 + 2 * pad
     assert r["height"] == 200
 

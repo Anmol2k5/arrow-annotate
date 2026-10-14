@@ -23,7 +23,14 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 
-LATEST_DIR = os.path.join(Path.home(), ".arrow", "latest")
+from arrow.storage.settings import config_dir
+
+LATEST_DIR = os.path.join(os.environ.get("ARROW_HOME") or str(Path.home() / ".arrow"), "latest")
+
+
+def latest_dir() -> str:
+    """Resolve runtime configuration rather than caching a user's home at import."""
+    return os.path.join(config_dir(), "latest")
 
 
 def build_context_md(
@@ -81,7 +88,7 @@ def build_context_md(
 
     if repository:
         lines.append("## Repository Context\n")
-        for key in ("root", "branch", "framework", "dev_server_url"):
+        for key in ("repository_root", "current_branch", "framework", "dev_server_url"):
             val = repository.get(key)
             if val:
                 lines.append(f"- **{key}**: {val}")
@@ -124,15 +131,16 @@ def mirror_latest(
 
     Returns the directory path.
     """
-    os.makedirs(LATEST_DIR, exist_ok=True)
+    directory = latest_dir()
+    os.makedirs(directory, exist_ok=True)
 
     # Copy the annotated screenshot.
-    dst_img = os.path.join(LATEST_DIR, "capture.png")
+    dst_img = os.path.join(directory, "capture.png")
     if os.path.isfile(annotated_path):
         shutil.copy2(annotated_path, dst_img)
 
     # Write context.md.
-    dst_ctx = os.path.join(LATEST_DIR, "context.md")
+    dst_ctx = os.path.join(directory, "context.md")
     with open(dst_ctx, "w", encoding="utf-8") as f:
         f.write(context_md)
 
@@ -144,11 +152,11 @@ def mirror_latest(
     }
     if assets:
         manifest["assets"] = assets
-    dst_manifest = os.path.join(LATEST_DIR, "manifest.json")
+    dst_manifest = os.path.join(directory, "manifest.json")
     with open(dst_manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    return LATEST_DIR
+    return directory
 
 
 def _format_context(ctx: dict) -> str:
@@ -164,4 +172,4 @@ def _format_context(ctx: dict) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["build_context_md", "mirror_latest", "LATEST_DIR"]
+__all__ = ["build_context_md", "mirror_latest", "latest_dir", "LATEST_DIR"]

@@ -1,11 +1,10 @@
 import ctypes
 import logging
-import os
 import signal
 import sys
 import threading
 
-from PyQt6.QtCore import QMetaObject, Qt, QTimer
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from arrow.capture.screenshot_service import ScreenshotService
@@ -20,6 +19,26 @@ from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.voice_input import VoiceInput
 
 log = logging.getLogger("arrow.app")
+
+
+class MainThreadDispatcher(QObject):
+    """Deliver callbacks to Qt even when the submitting thread has no event loop."""
+
+    requested = pyqtSignal(object)
+
+    def __init__(self):
+        super().__init__()
+        self.requested.connect(self._run, Qt.ConnectionType.QueuedConnection)
+
+    def submit(self, callback):
+        self.requested.emit(callback)
+
+    @pyqtSlot(object)
+    def _run(self, callback):
+        try:
+            callback()
+        except Exception:
+            log.exception("Main-thread callback failed")
 
 
 def _get_cursor_position():
@@ -50,6 +69,7 @@ def _get_foreground_title():
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Bluely Agent")
+    ui_dispatcher = MainThreadDispatcher()
 
     # -- Start Flask server in background daemon thread --
     server = AgentServer(host="127.0.0.1", port=5001)
@@ -72,6 +92,8 @@ def main():
     # -- Setup Highlight Overlay & Voice Input --
     overlay = SelectionOverlay()
     voice = VoiceInput()
+    app.aboutToQuit.connect(voice.stop_listening)
+    app.aboutToQuit.connect(server.stop)
 
     # -- Setup Session Manager --
     session_manager = SessionManager()
@@ -142,7 +164,7 @@ def main():
         capture_id = session.capture_id
         
         try:
-            session_manager.transition_to(CaptureState.COLLECTING_CONTEXT)
+            session_manager.transition_to(CaptureState.COLLECTING_CONTEXT, capture_id=capture_id)
         except ValueError:
             return
 
@@ -154,7 +176,17 @@ def main():
 
         # Capture raw screenshot on main thread (with overlay auto-hiding)
         screenshot_service = ScreenshotService()
-        raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
+        try:
+            raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
+        except Exception as exc:
+            log.exception("Screenshot capture failed")
+            session.error = str(exc)
+            try:
+                session_manager.transition_to(CaptureState.FAILED, capture_id=capture_id)
+            except ValueError:
+                return
+            notch.set_status(f"Capture failed: {exc}")
+            return
 
         # Create annotations from the overlay result (source + optional destination)
         data = result.to_dict()
@@ -190,7 +222,7 @@ def main():
                 return
 
             try:
-                session_manager.transition_to(CaptureState.PROCESSING)
+                session_manager.transition_to(CaptureState.PROCESSING, capture_id=capture_id)
             except ValueError:
                 return
 
@@ -210,16 +242,20 @@ def main():
                 )
             except Exception as e:
                 log.error("Capture pipeline failed: %s", e)
+                session.error = str(e)
+                ui_dispatcher.submit(lambda: notch.set_status(f"Capture failed: {session.error}"))
                 try:
-                    session_manager.transition_to(CaptureState.FAILED)
+                    session_manager.transition_to(CaptureState.FAILED, capture_id=capture_id)
                 except ValueError:
                     pass
                 return
 
             if pipeline.error:
                 log.error("Capture pipeline error: %s", pipeline.error)
+                session.error = pipeline.error
+                ui_dispatcher.submit(lambda: notch.set_status(f"Capture failed: {session.error}"))
                 try:
-                    session_manager.transition_to(CaptureState.FAILED)
+                    session_manager.transition_to(CaptureState.FAILED, capture_id=capture_id)
                 except ValueError:
                     pass
                 return
@@ -228,19 +264,14 @@ def main():
                 return
 
             try:
-                session_manager.transition_to(CaptureState.PREVIEW)
-                session_manager.transition_to(CaptureState.READY)
+                session_manager.transition_to(CaptureState.PREVIEW, capture_id=capture_id)
+                session_manager.transition_to(CaptureState.READY, capture_id=capture_id)
             except ValueError:
                 return
 
             # Update notch on main thread
-            QTimer.singleShot(0, notch.refresh_screenshots)
-            QTimer.singleShot(0, notch.auto_expand_briefly)
-
-            try:
-                session_manager.transition_to(CaptureState.SENDING)
-            except ValueError:
-                return
+            ui_dispatcher.submit(notch.refresh_screenshots)
+            ui_dispatcher.submit(notch.auto_expand_briefly)
 
             # Send to Agentation async
             record = CaptureRecord.from_dict(pipeline.record)
@@ -252,37 +283,40 @@ def main():
         if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
             return
 
+        from arrow.providers.agentation import AgentationClient, AgentationError
+        client = AgentationClient()
         try:
-            session_manager.transition_to(CaptureState.RUNNING)
-            from arrow.providers.agentation import AgentationClient
-            client = AgentationClient()
-            sessions = client.list_sessions()
-            if sessions:
-                session_id = sessions[0]["id"]
-            else:
-                s = client.create_session("bluely://desktop")
-                session_id = s["id"]
+            client.health()
+        except AgentationError:
+            log.info("Agentation unavailable; capture remains ready for MCP or direct providers")
+            return
 
-            filename = os.path.basename(record.screenshot_path)
-            image_url = f"{server.base_url}/screenshots/{filename}"
+        try:
+            session_manager.transition_to(CaptureState.SENDING, capture_id=capture_id)
+            session_manager.transition_to(CaptureState.RUNNING, capture_id=capture_id)
+            change_request = record.change_request or {}
+            page_url = ((change_request.get("source") or {}).get("element") or {}).get("pageUrl")
+            project = (change_request.get("project") or {}).get("repository_root")
+            session_id = client.get_or_create_session(page_url or "bluely://desktop", project)["id"]
             
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
                 return
 
             client.add_annotation(session_id, {
-                "comment": record.annotation_text or "Visual highlight",
+                "comment": (record.annotation_text or "Visual highlight")
+                           + f"\n\nAnnotated screenshot (local file): {record.screenshot_path}",
                 "element": "desktop_screen",
                 "elementPath": "desktop",
-                "imagePath": image_url
+                "imagePath": record.screenshot_path
             })
             
             if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
-                session_manager.transition_to(CaptureState.COMPLETED)
+                session_manager.transition_to(CaptureState.COMPLETED, capture_id=capture_id)
         except Exception as e:
             log.error("Agentation sync failed: %s", e)
             if session_manager.active_session and session_manager.active_session.capture_id == capture_id:
                 try:
-                    session_manager.transition_to(CaptureState.FAILED)
+                    session_manager.transition_to(CaptureState.FAILED, capture_id=capture_id)
                 except ValueError:
                     pass
 
@@ -291,7 +325,7 @@ def main():
     # Optional global hotkey
     try:
         import keyboard
-        keyboard.add_hotkey("ctrl+shift+space", toggle_annotation)
+        keyboard.add_hotkey("ctrl+shift+space", lambda: ui_dispatcher.submit(toggle_annotation))
     except Exception as e:
         log.warning("Could not register global hotkey: %s", e)
 

@@ -39,8 +39,8 @@ class Stroke:
 def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optional[dict]:
     """Bounding box of a stroke, mapped to global screen coords, with padding.
 
-    Returns ``None`` for an empty stroke. Coordinates are clamped so the box
-    never starts above/left of the virtual desktop origin.
+    Returns ``None`` for an empty stroke. Negative coordinates are valid for
+    monitors above or to the left of the primary display.
     """
     if not points:
         return None
@@ -52,8 +52,8 @@ def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optio
     gx = min_x + offset.x()
     gy = min_y + offset.y()
     return {
-        "x": max(0, int(gx - pad)),
-        "y": max(0, int(gy - pad)),
+        "x": int(gx - pad),
+        "y": int(gy - pad),
         "width": int(max_x - min_x + pad * 2),
         "height": int(max_y - min_y + pad * 2),
     }

@@ -19,13 +19,11 @@ class CodexProvider(BaseCLIProvider):
 
     def build_command(self, request: RunRequest) -> list[str]:
         # `codex exec` runs a non-interactive task with a prompt.
-        # The prompt embeds the change request; assets are referenced by path so
-        # Codex can open them from within the repository sandbox.
-        prompt = request.prompt
-        annotated = request.assets.get("annotated")
+        command = [self.cli_name, "exec", "--sandbox", "workspace-write", "--cd", request.repository_path]
+        annotated = request.assets.get("agent-annotated") or request.assets.get("annotated")
         if annotated and os.path.isfile(annotated):
-            prompt += f"\n\nAnnotated screenshot: {annotated}"
-        return [self.cli_name, "exec", "--cd", request.repository_path, prompt]
+            command.extend(["--image", annotated])
+        return [*command, "--", request.prompt]
 
 
 __all__ = ["CodexProvider"]

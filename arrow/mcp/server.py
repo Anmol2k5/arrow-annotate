@@ -36,13 +36,19 @@ def _error(request_id: Any, code: int, message: str) -> dict:
 
 def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> Optional[dict]:
     """Handle a single JSON-RPC request. Returns a response, or None for notifications."""
+    if not isinstance(request, dict):
+        return _error(None, -32600, "Invalid request: expected an object")
     method = request.get("method")
     request_id = request.get("id")
-    params = request.get("params") or {}
+    if request.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        return _error(request_id, -32600, "Invalid JSON-RPC request")
 
     # Notifications (no id) get no response.
-    if request_id is None and method and method.startswith("notifications/"):
+    if "id" not in request:
         return None
+    params = request.get("params", {})
+    if not isinstance(params, dict):
+        return _error(request_id, -32602, "Invalid params: expected an object")
 
     if method == "initialize":
         return _result(request_id, {
@@ -59,7 +65,9 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
 
     if method == "tools/call":
         name = params.get("name") or ""
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            return _error(request_id, -32602, "Tool name must be a string and arguments an object")
         try:
             value = tools.call(name, arguments)
         except ToolError as e:
@@ -70,6 +78,10 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
         except Exception as e:  # pragma: no cover - defensive
             log.exception("tool call failed")
             return _error(request_id, -32603, f"Internal error: {e}")
+        if name == "arrow_look":
+            return _result(request_id, {
+                "content": [{"type": "image", "mimeType": "image/png", "data": value["base64"]}],
+            })
         return _result(request_id, {
             "content": [{"type": "text", "text": json.dumps(value, indent=2)}],
         })
@@ -79,6 +91,8 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
 
     if method == "resources/read":
         uri = params.get("uri", "")
+        if not isinstance(uri, str):
+            return _error(request_id, -32602, "Resource URI must be a string")
         try:
             content = resources.read_resource(uri)
         except FileNotFoundError as e:
@@ -106,6 +120,8 @@ class MCPServer:
             try:
                 request = json.loads(line)
             except json.JSONDecodeError:
+                sys.stdout.write(json.dumps(_error(None, -32700, "Parse error")) + "\n")
+                sys.stdout.flush()
                 continue
             response = self.handle(request)
             if response is not None:

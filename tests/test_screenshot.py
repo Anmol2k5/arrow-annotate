@@ -139,3 +139,42 @@ def test_crops_generation():
     # With 100px padding: Xs range 50 - 100 = 0 to 400 + 100 = 500. Ys range 0 to 500.
     # Expected size: 500x500
     assert context_crop.size == (500, 500)
+
+
+def test_capture_composes_monitors_in_one_coordinate_space(monkeypatch):
+    from types import SimpleNamespace
+
+    from arrow.capture import screenshot_service as module
+    from arrow.capture.session import Annotation
+
+    screens = [ScreenInfo('left', (-100, 0, 100, 100), 1),
+               ScreenInfo('right', (0, 0, 100, 100), 2)]
+    monkeypatch.setattr(CoordinateMapper, 'from_qt', lambda: CoordinateMapper(screens))
+
+    class FakeMSS:
+        monitors = [{'left': -100, 'top': 0, 'width': 300, 'height': 200},
+                    {'left': -100, 'top': 0, 'width': 100, 'height': 100},
+                    {'left': 0, 'top': 0, 'width': 200, 'height': 200}]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def grab(self, monitor):
+            color = (255, 0, 0) if monitor['left'] < 0 else (0, 255, 0)
+            image = Image.new('RGB', (monitor['width'], monitor['height']), color)
+            return SimpleNamespace(size=image.size, bgra=image.tobytes('raw', 'BGRX'))
+
+    monkeypatch.setattr(module.mss, 'mss', FakeMSS)
+    service = ScreenshotService()
+    raw, screen, mapper = service.capture_raw()
+    assert raw.size == (400, 200)
+    annotations = [Annotation(id='a', type='rectangle', role=role,
+                              geometry={'x': x, 'y': 10, 'width': 10, 'height': 10})
+                   for role, x in [('source', -90), ('destination', 10)]]
+    source, destination, _ = service.generate_crops(raw, annotations, mapper)
+    assert source.getpixel((0, 0)) == (255, 0, 0)
+    assert destination.getpixel((0, 0)) == (0, 255, 0)
+    assert source.size == destination.size == (20, 20)

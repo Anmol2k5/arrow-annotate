@@ -3,7 +3,7 @@
   "name": "Bluely Web Bridge",
   "version": "1.1.0",
   "description": "Connects Bluely desktop pointer to web pages for deep element inspection",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

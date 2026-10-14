@@ -11,11 +11,13 @@ providers share the interface:
     cancel_run()    -> stop a run
     get_status()    -> current provider status
 
-Safety rules enforced here:
+Execution rules enforced here:
   * Commands are never executed via a shell (no ``shell=True``); argument lists
     only.
-  * Runs are confined to the selected repository working directory.
-  * Destructive categories require an explicit confirmation callback.
+  * Runs start in the selected repository working directory. This alone is not
+    a sandbox; adapters must use the CLI's supported sandbox/permission controls.
+  * ``confirm_command`` can guard commands explicitly submitted to it. A child
+    CLI's internal tool calls are not intercepted by this subprocess adapter.
   * Authentication tokens are never read or stored.
 """
 
@@ -169,23 +171,26 @@ class BaseCLIProvider(Provider):
         raise NotImplementedError
 
     def start_run(self, request: RunRequest) -> None:
-        validation = self.validate(request.repository_path)
-        if not validation.ok:
-            self._status = ProviderStatus.FAILED
-            raise RuntimeError(validation.reason)
+        with self._lock:
+            if self._status == ProviderStatus.RUNNING or (self._process and self._process.poll() is None):
+                raise RuntimeError("Provider run is already running")
+            validation = self.validate(request.repository_path)
+            if not validation.ok:
+                self._status = ProviderStatus.FAILED
+                raise RuntimeError(validation.reason)
 
-        command = self.build_command(request)
-        # Never use shell=True; confine cwd to the repository.
-        log.info("Starting %s run in %s", self.name, request.repository_path)
-        self._process = self._popen(
-            command,
-            cwd=request.repository_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        self._status = ProviderStatus.RUNNING
+            command = self.build_command(request)
+            # Never use shell=True; confine cwd to the repository.
+            log.info("Starting %s run in %s", self.name, request.repository_path)
+            self._process = self._popen(
+                command,
+                cwd=request.repository_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            self._status = ProviderStatus.RUNNING
 
     def stream_events(self) -> Iterator[ProviderEvent]:
         if self._process is None:

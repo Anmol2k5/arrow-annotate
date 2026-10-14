@@ -1117,6 +1117,12 @@ class DynamicNotch(QWidget):
         expanded_layout.setContentsMargins(0, 0, 0, 0)
         expanded_layout.setSpacing(0)
 
+        self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet("color: #F8FAFC; padding: 8px 24px;")
+        self._status_label.hide()
+        expanded_layout.addWidget(self._status_label)
+
         self._screens_view = ScreenshotsView()
         expanded_layout.addWidget(self._screens_view, 1)
 
@@ -1265,7 +1271,10 @@ class DynamicNotch(QWidget):
         self._auto_collapse_timer = None
 
     def set_status(self, text):
-        pass
+        self._status_label.setText(text)
+        self._status_label.setVisible(bool(text))
+        if text and self._state == "idle":
+            self.expand()
 
     def update_status(self, text):
-        pass
+        self.set_status(text)

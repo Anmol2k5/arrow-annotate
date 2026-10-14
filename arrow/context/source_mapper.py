@@ -103,7 +103,18 @@ def _iter_source_files(root: str):
             if scanned > _MAX_SCAN_FILES:
                 log.debug("Source scan hit file limit (%d)", _MAX_SCAN_FILES)
                 return
-            yield os.path.join(dirpath, filename)
+            path = os.path.join(dirpath, filename)
+            if _within_root(root, path):
+                yield path
+
+
+def _within_root(root: str, path: str) -> bool:
+    """Resolve symlinks before accepting repository source evidence."""
+    try:
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+    except ValueError:
+        return False
 
 
 def _read_lines(path: str) -> Optional[list[str]]:
@@ -137,7 +148,7 @@ def _resolve_existing(root: str, file_name: str) -> Optional[str]:
         paths.append(os.path.join(root, "src", candidate))
     for p in paths:
         p = os.path.normpath(p)
-        if os.path.isfile(p):
+        if _within_root(root, p) and os.path.isfile(p):
             return p
     # Fall back to basename search within the repo.
     base = os.path.basename(candidate)

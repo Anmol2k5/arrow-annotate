@@ -94,7 +94,12 @@ def make_store(tmp_path) -> CaptureStore:
 
 def test_full_pipeline_with_browser_dom_resolution(tmp_path):
     store = make_store(tmp_path)
-    orch = make_orchestrator(tmp_path, bridge=FakeBridge(BROWSER_ELEMENT), store=store)
+    project = tmp_path / "project"
+    source = project / BROWSER_ELEMENT["reactSource"]["fileName"]
+    source.parent.mkdir(parents=True)
+    source.write_text("\n" * 46 + "export function PricingCTA() { return <button />; }\n")
+    orch = make_orchestrator(tmp_path, bridge=FakeBridge(BROWSER_ELEMENT), store=store,
+                             project_dir=str(project))
 
     session = CaptureSession()
     session.annotations = [source_annotation(session.capture_id)]
@@ -133,7 +138,7 @@ def test_full_pipeline_with_browser_dom_resolution(tmp_path):
     # The annotation label has priority; the DOM accessible name is carried in the element.
     assert cr["source"]["label"] == "Source selection"
     assert cr["source"]["element"]["name"] == "Get started"
-    assert cr["source"]["resolution_source"] == "browser_dom"
+    assert cr["source"]["resolution_source"] == "dev_instrumentation"
     assert any(c["operation"] == "resize" for c in cr["requested_changes"])
     assert cr["likely_files"][0]["source_file"] == "src/components/pricing/PricingCTA.tsx"
 
@@ -352,3 +357,27 @@ def test_store_optional(tmp_path):
     assert result.error is None
     assert result.record is not None
     assert result.record["id"] == session.capture_id
+
+
+def test_pipeline_maps_explicit_dom_id_through_repository_source(tmp_path, monkeypatch):
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path / 'state'))
+    project = tmp_path / 'project'
+    project.mkdir()
+    (project / 'Button.tsx').write_text('<button data-arrow-id="pricing-primary-cta">Get started</button>')
+    element = {**BROWSER_ELEMENT, 'reactSource': None}
+    orch = make_orchestrator(tmp_path, bridge=FakeBridge(element), project_dir=str(project))
+    result = orch.run(CaptureSession(), {'x': 100, 'y': 100, 'width': 200, 'height': 60},
+                      raw_img=make_raw(), screen_info=make_mapper().screens[0], mapper=make_mapper())
+    assert result.error is None
+    assert result.source.mapping['source_file'] == 'Button.tsx'
+    assert result.source.mapping['method'] == 'data_arrow_id'
+
+
+def test_pipeline_does_not_claim_missing_react_file_is_resolved(tmp_path, monkeypatch):
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path / 'state'))
+    orch = make_orchestrator(tmp_path, bridge=FakeBridge(BROWSER_ELEMENT), project_dir=str(tmp_path))
+    result = orch.run(CaptureSession(), {'x': 100, 'y': 100, 'width': 200, 'height': 60},
+                      raw_img=make_raw(), screen_info=make_mapper().screens[0], mapper=make_mapper())
+    assert result.error is None
+    assert result.source.mapping.get('resolved') is False
+    assert result.change_request['likely_files'] == []

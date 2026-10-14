@@ -1,7 +1,7 @@
 import asyncio
 import base64
+import binascii
 import ctypes
-import datetime
 import io
 import json
 import logging
@@ -10,16 +10,19 @@ import platform
 import socket
 import threading
 import time
+import uuid
 from concurrent.futures import Future
 from functools import wraps
 
 import websockets
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.serving import make_server
 
 from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
 from arrow.server.security import (
+    LOCALHOST_HOSTS,
     MAX_REQUEST_BYTES,
     Capability,
     CapabilityManager,
@@ -202,6 +205,39 @@ app.config["TOKEN_MANAGER"] = TokenManager()
 app.config["CAPABILITIES"] = CapabilityManager()
 
 
+def _validate_payload(endpoint: str, data) -> str | None:
+    if not isinstance(data, dict):
+        return "JSON body must be an object"
+    for field in ("query", "type", "target", "image", "source_file_path", "selected_text"):
+        if field in data and not isinstance(data[field], str):
+            return f"{field} must be a string"
+    for field in ("x", "y"):
+        if data.get(field) is not None and type(data[field]) is not int:
+            return f"{field} must be an integer"
+    if endpoint.startswith("highlight_"):
+        rect = data.get("rect")
+        if not isinstance(rect, dict):
+            return "rect must be an object"
+        for field in ("x", "y"):
+            if type(rect.get(field, 0)) is not int:
+                return f"rect.{field} must be an integer"
+        for field, alias in (("width", "w"), ("height", "h")):
+            value = rect.get(field, rect.get(alias))
+            if type(value) is not int or value <= 0:
+                return f"rect.{field} must be a positive integer"
+        if endpoint == "highlight_execute":
+            return _validate_payload("execute", data.get("action"))
+    if endpoint == "execute_batch":
+        actions = data.get("actions")
+        if not isinstance(actions, list):
+            return "actions must be a list of objects"
+        for action in actions:
+            error = _validate_payload("execute", action)
+            if error:
+                return error
+    return None
+
+
 def require_capability(capability: Capability):
     """Decorator: enforce bearer auth, localhost origin and a capability.
 
@@ -226,6 +262,10 @@ def require_capability(capability: Capability):
                     "hint": "Opt in by setting ARROW_ENABLED_CAPABILITIES="
                             f"{capability.value} before starting the server.",
                 }), 403
+            if request.method == "POST":
+                error = _validate_payload(fn.__name__, request.get_json(silent=True))
+                if error:
+                    return jsonify({"error": error}), 400
             return fn(*args, **kwargs)
 
         return wrapper
@@ -296,13 +336,20 @@ def save_screenshot():
     if not image_b64:
         return jsonify({"error": "image (base64) required"}), 400
 
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"capture_{ts}.png"
-    path = os.path.join(SCREENSHOTS_DIR, filename)
-
     try:
-        image_data = base64.b64decode(image_b64)
+        from PIL import Image, UnidentifiedImageError
+        image_data = base64.b64decode(image_b64, validate=True)
+        with Image.open(io.BytesIO(image_data)) as image:
+            if image.format != "PNG":
+                return jsonify({"error": "image must be a PNG"}), 400
+            image.verify()
+    except (binascii.Error, ValueError, OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        return jsonify({"error": "image must be a valid base64-encoded PNG"}), 400
+
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    filename = f"capture_{uuid.uuid4().hex}.png"
+    path = os.path.join(SCREENSHOTS_DIR, filename)
+    try:
         with open(path, "wb") as f:
             f.write(image_data)
     except Exception as e:
@@ -501,6 +548,8 @@ class WebSocketBridge:
 
     def __init__(self, host="127.0.0.1", port=5002, token_manager=None,
                  auth_timeout: float = 10.0):
+        if host not in LOCALHOST_HOSTS:
+            raise ValueError("WebSocket bridge must bind to localhost")
         self.host = host
         self.port = port
         self.token_manager = token_manager or app.config["TOKEN_MANAGER"]
@@ -511,11 +560,35 @@ class WebSocketBridge:
         self._pending: dict[str, Future] = {}
         self._ready = threading.Event()
         self._pending_lock = threading.Lock()
+        self._startup_error = None
+        self._stop_event = None
 
     def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._ready.clear()
+        self._startup_error = None
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="WSBridge")
         self._thread.start()
-        self._ready.wait(timeout=3)
+        if not self._ready.wait(timeout=3):
+            raise RuntimeError("WebSocket bridge did not start in time")
+        if self._startup_error is not None:
+            self._thread.join(timeout=3)
+            raise RuntimeError("WebSocket bridge failed to start") from self._startup_error
+
+    def stop(self):
+        if self._loop and self._loop.is_running() and self._stop_event:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=3)
+
+    def _fail_pending(self, reason):
+        with self._pending_lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_exception(ConnectionError(reason))
 
     @property
     def connected(self):
@@ -524,30 +597,46 @@ class WebSocketBridge:
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._serve())
+        try:
+            self._loop.run_until_complete(self._serve())
+        except Exception as exc:
+            self._startup_error = exc
+            self._ready.set()
+        finally:
+            self._ws = None
+            self._fail_pending("WebSocket bridge stopped")
+            self._loop.close()
 
     async def _serve(self):
-        async with websockets.serve(self._handler, self.host, self.port):
+        self._stop_event = asyncio.Event()
+        async with websockets.serve(self._handler, self.host, self.port, close_timeout=1) as server:
+            self.port = server.sockets[0].getsockname()[1]
             self._ready.set()
-            await asyncio.Future()
+            await self._stop_event.wait()
 
     async def _handler(self, websocket):
         if not await self._authenticate(websocket):
             return
         try:
             async for raw in websocket:
-                data = json.loads(raw)
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(data, dict) or data.get("type") not in (None, "inspect_result"):
+                    continue
                 msg_id = data.pop("id", None)
-                if msg_id:
+                if isinstance(msg_id, str) and msg_id:
                     with self._pending_lock:
                         fut = self._pending.pop(msg_id, None)
-                    if fut:
+                    if fut and not fut.done():
                         fut.set_result(data)
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
             if self._ws is websocket:
                 self._ws = None
+                self._fail_pending("Browser extension disconnected")
 
     async def _authenticate(self, websocket) -> bool:
         """Require an ``auth`` message with a valid bearer token before use.
@@ -565,12 +654,16 @@ class WebSocketBridge:
         except (json.JSONDecodeError, TypeError):
             await self._close_unauth(websocket, "malformed auth message")
             return False
-        if data.get("type") != "auth":
+        if not isinstance(data, dict) or data.get("type") != "auth":
             await self._close_unauth(websocket, "auth required")
             return False
         if not self.token_manager.verify(data.get("token")):
             await self._close_unauth(websocket, "invalid token")
             return False
+        previous = self._ws
+        if previous is not None and previous is not websocket:
+            self._fail_pending("Browser extension connection replaced")
+            await previous.close()
         self._ws = websocket
         await websocket.send(json.dumps({"type": "auth_ok"}))
         return True
@@ -587,7 +680,8 @@ class WebSocketBridge:
 
     def inspect(self, x: int, y: int, timeout: float = 5.0) -> dict:
         """Send inspect command to extension. Blocking call from any thread."""
-        if not self._ws:
+        websocket = self._ws
+        if websocket is None:
             raise ConnectionError("No browser extension connected to WebSocket bridge")
 
         msg_id = f"{time.monotonic_ns()}"
@@ -596,18 +690,25 @@ class WebSocketBridge:
             self._pending[msg_id] = fut
 
         async def _send():
-            await self._ws.send(json.dumps({
-                "type": "inspect", "id": msg_id, "x": x, "y": y,
-            }))
+            try:
+                await websocket.send(json.dumps({
+                    "type": "inspect", "id": msg_id, "x": x, "y": y,
+                }))
+            except Exception:
+                with self._pending_lock:
+                    pending = self._pending.pop(msg_id, None)
+                if pending and not pending.done():
+                    pending.set_exception(ConnectionError("Browser extension disconnected"))
 
         asyncio.run_coroutine_threadsafe(_send(), self._loop)
 
         try:
             return fut.result(timeout=timeout)
         except TimeoutError:
+            raise TimeoutError("Extension did not respond in time") from None
+        finally:
             with self._pending_lock:
                 self._pending.pop(msg_id, None)
-            raise TimeoutError("Extension did not respond in time")
 
 
 # ---------------------------------------------------------------------------
@@ -706,18 +807,13 @@ def highlight_capture():
         return jsonify({"error": "rect must have non-zero width/height"}), 400
 
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"highlight_{ts}.png"
+    filename = f"highlight_{uuid.uuid4().hex}.png"
     path = os.path.join(SCREENSHOTS_DIR, filename)
 
     with mss.mss() as sct:
-        from arrow.capture.coordinate_mapper import ScreenInfo
-        screen = ScreenInfo(name="overlay", geometry=(int(x), int(y), int(w), int(h)), scale=1.0)
-        monitor = find_mss_monitor(sct, screen)
-        full = sct.grab(monitor)
+        full = sct.grab({"left": int(x), "top": int(y), "width": int(w), "height": int(h)})
         pil_full = Image.frombytes("RGB", full.size, full.rgb)
-        cropped = pil_full.crop((int(x), int(y), int(x + w), int(y + h)))
-        cropped.save(path, "PNG")
+        pil_full.save(path, "PNG")
 
     bridge = app.config.get("WS_BRIDGE")
     resolver = HighlightResolver(ws_bridge=bridge)
@@ -793,7 +889,8 @@ def highlight_execute():
         ctrl.hotkey("ctrl+a")
         return jsonify({"status": "ok", "action": "select_all", "at": [cx, cy]})
 
-    return execute_inner(action_data)
+    result = execute_inner(action_data)
+    return jsonify(result), 400 if result.get("status") == "error" else 200
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +901,8 @@ class AgentServer:
     """Wraps the Flask server and WebSocket bridge in background threads."""
 
     def __init__(self, host="127.0.0.1", port=5001, ws_host="127.0.0.1", ws_port=5002):
+        if host not in LOCALHOST_HOSTS or ws_host not in LOCALHOST_HOSTS:
+            raise ValueError("Agent server must bind to localhost")
         self.host = host
         self.port = port
         self.ws_host = ws_host
@@ -811,37 +910,60 @@ class AgentServer:
         self._thread = None
         self._ws_bridge = None
         self._running = False
+        self._http_server = None
+        self._lifecycle_lock = threading.RLock()
 
     def start(self):
-        if self._running:
-            return
-        self._running = True
-        app.config["start_time"] = time.time()
+        with self._lifecycle_lock:
+            if self._running:
+                return
+            app.config["start_time"] = time.time()
+            self._http_server = make_server(self.host, self.port, app, threaded=True)
+            self.port = self._http_server.server_port
 
-        # Start WebSocket bridge
-        self._ws_bridge = WebSocketBridge(
-            host=self.ws_host,
-            port=self.ws_port,
-            token_manager=app.config["TOKEN_MANAGER"],
-        )
-        self._ws_bridge.start()
-        app.config["WS_BRIDGE"] = self._ws_bridge
-        log.info("[WSBridge] listening on ws://%s:%s", self.ws_host, self.ws_port)
+            # Start WebSocket bridge
+            self._ws_bridge = WebSocketBridge(
+                host=self.ws_host,
+                port=self.ws_port,
+                token_manager=app.config["TOKEN_MANAGER"],
+            )
+            try:
+                self._ws_bridge.start()
+            except Exception:
+                self._http_server.server_close()
+                self._http_server = None
+                raise
+            app.config["WS_BRIDGE"] = self._ws_bridge
+            log.info("[WSBridge] listening on ws://%s:%s", self.ws_host, self.ws_port)
 
-        # Start Flask
-        self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="AgentServer",
-        )
-        self._thread.start()
-        log.info("[AgentServer] listening on http://%s:%s", self.host, self.port)
+            # Start Flask
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(self._http_server,),
+                daemon=True,
+                name="AgentServer",
+            )
+            self._running = True
+            self._thread.start()
+            log.info("[AgentServer] listening on http://%s:%s", self.host, self.port)
 
-    def _run(self):
-        app.run(host=self.host, port=self.port, threaded=True, debug=False, use_reloader=False)
+    def _run(self, http_server):
+        http_server.serve_forever()
 
     def stop(self):
-        self._running = False
+        with self._lifecycle_lock:
+            if self._http_server is not None:
+                if self._running:
+                    self._http_server.shutdown()
+                self._http_server.server_close()
+                self._http_server = None
+            if self._thread:
+                self._thread.join(timeout=3)
+            if self._ws_bridge:
+                self._ws_bridge.stop()
+                if app.config.get("WS_BRIDGE") is self._ws_bridge:
+                    app.config["WS_BRIDGE"] = None
+            self._running = False
 
     @property
     def base_url(self):

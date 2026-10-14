@@ -55,7 +55,7 @@ class CompilerInput(BaseModel):
     def instruction_text(self) -> str:
         # Typed corrections take priority over voice; raw instruction is the base.
         parts = [self.raw_instruction, self.voice_transcript, self.typed_corrections]
-        combined = " ".join(p.strip() for p in parts if p and p.strip())
+        combined = " ".join(dict.fromkeys(p.strip() for p in parts if p and p.strip()))
         return combined.strip()
 
 
@@ -242,7 +242,7 @@ def _center(annotation: Optional[dict], context: dict) -> Optional[tuple[float, 
 # ---------------------------------------------------------------------------
 
 def _has_any(text: str, words) -> bool:
-    return any(w in text for w in words)
+    return _has_word(text, words)
 
 
 def _has_word(text: str, words) -> bool:
@@ -294,7 +294,7 @@ def _classify_intent(text: str, has_destination: bool) -> tuple[Intent, list[str
 
 def _magnitude(text: str) -> Optional[str]:
     for word, mag in _MAGNITUDE_WORDS.items():
-        if word in text:
+        if _has_word(text, (word,)):
             return mag
     return None
 
@@ -310,7 +310,7 @@ def _extract_changes(text: str, intent: Intent, req: ChangeRequest) -> list[Requ
 
     # Resize can accompany a move (e.g. "move this here and make it wider").
     for word, (dimension, direction) in _RESIZE_WORDS.items():
-        if word in text:
+        if _has_word(text, (word,)):
             details: dict[str, Any] = {"dimension": dimension, "direction": direction}
             mag = _magnitude(text)
             if mag:
@@ -324,8 +324,8 @@ def _extract_changes(text: str, intent: Intent, req: ChangeRequest) -> list[Requ
             break
 
     if intent == Intent.RESTYLE_ELEMENT or _has_any(text, _RESTYLE_WORDS):
-        matched = [w for w in _RESTYLE_WORDS if w in text]
-        if matched and intent != Intent.MOVE_ELEMENT or intent == Intent.RESTYLE_ELEMENT:
+        matched = [w for w in _RESTYLE_WORDS if _has_word(text, (w,))]
+        if matched or intent == Intent.RESTYLE_ELEMENT:
             changes.append(RequestedChange(
                 operation="restyle",
                 description="Apply the requested style change.",
@@ -372,7 +372,7 @@ def _move_relationship(
 ) -> tuple[MoveRelationship, bool, str]:
     # Explicit keywords take priority (structured over visual).
     for keyword, rel in _REL_KEYWORDS.items():
-        if keyword in text:
+        if _has_word(text, (keyword,)):
             return rel, False, f'Explicit spatial keyword "{keyword}" in instruction.'
 
     # Fall back to geometry comparison (a marked visual inference).

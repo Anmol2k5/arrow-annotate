@@ -112,10 +112,10 @@ class TokenManager:
             return token
 
     def verify(self, presented: Optional[str]) -> bool:
-        if not presented or not isinstance(presented, str):
+        if not presented or not isinstance(presented, str) or not presented.isascii():
             return False
         expected = self.get_or_create()
-        return hmac.compare_digest(presented, expected)
+        return hmac.compare_digest(presented.encode('utf-8'), expected.encode('utf-8'))
 
 
 def parse_bearer(header_value: Optional[str]) -> Optional[str]:

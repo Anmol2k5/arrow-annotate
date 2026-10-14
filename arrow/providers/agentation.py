@@ -39,8 +39,15 @@ class AgentationClient:
     def get_session(self, session_id: str) -> dict:
         return self._get(f"/sessions/{session_id}")
 
+    def get_or_create_session(self, url: str, project_id: Optional[str] = None) -> dict:
+        for session in self.list_sessions():
+            if (session.get("url") == url and session.get("status") == "active"
+                    and session.get("projectId") == project_id):
+                return session
+        return self.create_session(url, project_id)
+
     def close_session(self, session_id: str) -> dict:
-        return self._patch(f"/annotations/{session_id}", {"status": "closed"})
+        raise AgentationError("Agentation's HTTP API does not expose session closing")
 
     # ------------------------------------------------------------------
     # Annotations

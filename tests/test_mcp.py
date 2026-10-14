@@ -136,3 +136,22 @@ def test_dispatch_unknown_method(repo):
     server = MCPServer(repository=repo)
     resp = server.handle({"jsonrpc": "2.0", "id": 8, "method": "bogus/method"})
     assert resp["error"]["code"] == -32601
+
+
+def test_screenshot_tool_returns_mcp_image_content(repo, monkeypatch):
+    from PIL import Image
+
+    from arrow.capture.screenshot_service import ScreenshotService
+    monkeypatch.setattr(ScreenshotService, 'capture_headless',
+                        lambda self, region=None: Image.new('RGB', (2, 2), 'red'))
+    response = MCPServer(repository=repo).handle({
+        'jsonrpc': '2.0', 'id': 10, 'method': 'tools/call',
+        'params': {'name': 'arrow_look', 'arguments': {}},
+    })
+    content = response['result']['content']
+    assert content[0]['type'] == 'image'
+    assert content[0]['mimeType'] == 'image/png'
+    import base64
+    import io
+    with Image.open(io.BytesIO(base64.b64decode(content[0]['data']))) as image:
+        assert image.getpixel((0, 0)) == (255, 0, 0)

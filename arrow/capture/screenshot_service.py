@@ -35,7 +35,7 @@ class ScreenshotService:
 
     def capture_raw(self, overlay_widget: Optional[Any] = None) -> Tuple[Image.Image, ScreenInfo, CoordinateMapper]:
         """
-        Captures a clean raw screenshot of the active monitor without the drawing overlay.
+        Captures a clean virtual-desktop screenshot without the drawing overlay.
         Processes Qt events and waits for the OS window manager to hide the overlay.
         """
         mapper = CoordinateMapper.from_qt()
@@ -48,23 +48,32 @@ class ScreenshotService:
             # Brief pause for OS compositor to remove transparency overlay from screen buffers
             time.sleep(0.08)
 
-        # Get virtual center of active window or cursor to find screen
-        from PyQt6.QtGui import QCursor
-        pos = QCursor.pos()
-        screen_info = mapper.find_screen(pos.x(), pos.y())
+        if not mapper.screens:
+            raise RuntimeError("No displays available for capture")
+        left = min(s.x for s in mapper.screens)
+        top = min(s.y for s in mapper.screens)
+        right = max(s.x + s.w for s in mapper.screens)
+        bottom = max(s.y + s.h for s in mapper.screens)
+        scale = max(s.scale for s in mapper.screens)
+        screen_info = ScreenInfo("virtual_desktop", (left, top, right - left, bottom - top), scale)
+        raw_img = Image.new("RGB", (round(screen_info.w * scale), round(screen_info.h * scale)))
+        try:
+            with mss.mss() as sct:
+                for screen in mapper.screens:
+                    monitor = find_mss_monitor(sct, screen)
+                    captured = sct.grab(monitor)
+                    image = Image.frombytes("RGB", captured.size, captured.bgra, "raw", "BGRX")
+                    size = (round(screen.w * scale), round(screen.h * scale))
+                    if image.size != size:
+                        image = image.resize(size, Image.Resampling.LANCZOS)
+                    raw_img.paste(image, (round((screen.x - left) * scale), round((screen.y - top) * scale)))
+        finally:
+            if overlay_widget is not None and getattr(overlay_widget, "_active", False):
+                overlay_widget.show()
+                overlay_widget.raise_()
 
-        with mss.mss() as sct:
-            monitor = find_mss_monitor(sct, screen_info)
-            sct_img = sct.grab(monitor)
-            # Convert mss RawImage to PIL Image
-            raw_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-
-        # Restore overlay if needed
-        if overlay_widget is not None and getattr(overlay_widget, "_active", False):
-            overlay_widget.show()
-            overlay_widget.raise_()
-
-        return raw_img, screen_info, mapper
+        # All annotations must use the composed image's origin and common scale.
+        return raw_img, screen_info, CoordinateMapper([screen_info])
 
     @staticmethod
     def downscale_for_agent(img: Image.Image, max_edge: int = MAX_AGENT_EDGE) -> Image.Image:
@@ -77,7 +86,7 @@ class ScreenshotService:
         if long <= max_edge:
             return img
         ratio = max_edge / long
-        return img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        return img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.Resampling.LANCZOS)
 
     def capture_headless(self, region: Optional[Dict[str, int]] = None) -> Image.Image:
         """Capture the screen without touching any overlay widget.
@@ -259,8 +268,8 @@ class ScreenshotService:
             screen, rect = mapper.virtual_rect_to_physical_rect(x, y, w, h)
             rx1 = max(0, rect["x"])
             ry1 = max(0, rect["y"])
-            rx2 = min(raw_img.width, rx1 + rect["width"])
-            ry2 = min(raw_img.height, ry1 + rect["height"])
+            rx2 = min(raw_img.width, rect["x"] + rect["width"])
+            ry2 = min(raw_img.height, rect["y"] + rect["height"])
 
             if rx2 > rx1 and ry2 > ry1:
                 return raw_img.crop((rx1, ry1, rx2, ry2))

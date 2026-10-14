@@ -657,7 +657,7 @@ class HighlightResolver:
 
         try:
             result = self._ws_bridge.inspect(x, y, timeout=3.0)
-            if not result or result.get("status") != "ok":
+            if not isinstance(result, dict) or result.get("error"):
                 return None
 
             el = result.get("element", {}) or result

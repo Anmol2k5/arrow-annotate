@@ -95,13 +95,13 @@ function inspectElement(x, y) {
 }
 
 function generateSelector(el) {
-  if (el.id) return `#${el.id}`;
+  if (el.id) return `#${CSS.escape(el.id)}`;
   const parts = [];
   let current = el;
   while (current && current !== document.body && current !== document.documentElement) {
     let sel = current.tagName.toLowerCase();
     if (current.id) {
-      parts.unshift(`#${current.id}`);
+      parts.unshift(`#${CSS.escape(current.id)}`);
       break;
     }
     if (current.className && typeof current.className === "string") {
@@ -110,7 +110,7 @@ function generateSelector(el) {
         .split(/\s+/)
         .filter(Boolean)
         .slice(0, 3);
-      if (classes.length) sel += "." + classes.join(".");
+      if (classes.length) sel += "." + classes.map(c => CSS.escape(c)).join(".");
     }
     const parent = current.parentElement;
     if (parent) {
@@ -125,7 +125,7 @@ function generateSelector(el) {
     parts.unshift(sel);
     current = current.parentElement;
   }
-  return parts.join(" > ");
+  return parts.join(" > ") || el.tagName.toLowerCase();
 }
 
 function getElementPath(el) {
@@ -133,7 +133,7 @@ function getElementPath(el) {
   let current = el;
   while (current && current !== document.documentElement) {
     let tag = current.tagName.toLowerCase();
-    if (current.id) tag += `#${current.id}`;
+    if (current.id) tag += `#${CSS.escape(current.id)}`;
     parts.unshift(tag);
     current = current.parentElement;
   }
@@ -162,7 +162,7 @@ function getReactComponentTree(el) {
     ) {
       names.unshift(name);
     }
-    fiber = owner;
+    fiber = owner || fiber.return;
     depth++;
   }
   return names.join(" > ");
