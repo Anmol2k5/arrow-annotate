@@ -37,7 +37,7 @@ def test_dispatcher_logs_callback_errors_without_escaping(caplog):
     assert app is QApplication.instance()
 
 
-def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_session=False):
+def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_session=False, cancel_pending=False, switch_project=None):
     from types import SimpleNamespace
 
     import arrow.app as application
@@ -56,13 +56,16 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
 
     notch = SimpleNamespace(show=lambda: None, set_recording=lambda *a: None,
                             set_status=lambda *a: None, refresh_screenshots=lambda: None,
-                            auto_expand_briefly=lambda: None)
-    overlay = SimpleNamespace(selection_complete=Signal(), show_overlay=lambda: None)
+                            auto_expand_briefly=lambda: None, isVisible=lambda: True,
+                            hide=lambda: None, setToolTip=lambda *a: None)
+    overlay = SimpleNamespace(selection_complete=Signal(), finish_requested=Signal(),
+                              cancel_requested=Signal(), show_overlay=lambda: None, hide=lambda: None)
     overlay.hide_overlay = lambda: overlay.selection_complete.emit(SimpleNamespace(
-        to_dict=lambda: {'x': 0, 'y': 0, 'width': 1, 'height': 1}))
-    voice = SimpleNamespace(result_ready=Signal(), error=Signal(), start_listening=lambda *a: None,
-                            stop_listening=lambda: None)
+        to_dict=lambda: {'source': {'x': 0, 'y': 0, 'width': 1, 'height': 1}, 'annotations': []}))
+    voice = SimpleNamespace(finished=Signal(), start_listening=lambda *a: None,
+                            finish_listening=lambda: None, stop_listening=lambda: None)
     manager = SessionManager()
+    registered = {}
 
     class FakeApp:
         aboutToQuit = Signal()
@@ -73,31 +76,32 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
         def exec(self):
             notch.on_highlight_requested()
             notch.on_highlight_requested()
+            if switch_project:
+                notch.on_project_selected(switch_project)
+            if cancel_pending:
+                registered["esc"]()
+            voice.finished.emit("complete instruction", "", manager.active_session.capture_id)
             return 0
-
-    class Timer:
-        def __init__(self):
-            self.timeout = Signal()
-
-        def start(self, *args):
-            pass
-
-        @staticmethod
-        def singleShot(delay, callback):
-            callback()
 
     def fail_capture(*args):
         if replace_session:
             manager.start_session()
         raise RuntimeError('display lost')
 
-    monkeypatch.setattr(application, 'QApplication', lambda *a: FakeApp())
-    monkeypatch.setattr(application, 'QTimer', Timer)
+    class AppFactory:
+        def __new__(cls, *args):
+            return FakeApp()
+
+        @staticmethod
+        def activeModalWidget():
+            return None
+
+    monkeypatch.setattr(application, 'QApplication', AppFactory)
     monkeypatch.setattr(application, 'AgentServer', lambda **k: SimpleNamespace(
         start=lambda: None, stop=lambda: None, ws_bridge=None, base_url='http://127.0.0.1:1'))
     monkeypatch.setattr(application, 'DynamicNotch', lambda **k: notch)
     monkeypatch.setattr(application, 'SelectionOverlay', lambda: overlay)
-    monkeypatch.setattr(application, 'VoiceInput', lambda: voice)
+    monkeypatch.setattr(application, 'VoiceInput', lambda **k: voice)
     monkeypatch.setattr(application, 'SessionManager', lambda: manager)
     monkeypatch.setattr(application, 'CaptureStore', lambda: None)
     monkeypatch.setattr(application, 'ScreenshotService', lambda: SimpleNamespace(
@@ -105,8 +109,22 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
     if not fail_screenshot:
         from arrow.storage.schemas import CaptureRecord
         record = CaptureRecord(id='c', timestamp='now', screenshot_path=str(tmp_path / 'shot.png'))
-        monkeypatch.setattr(application, 'ContextOrchestrator', lambda **k: SimpleNamespace(
-            set_project_dir=lambda *a: None, run=lambda **k: SimpleNamespace(error=None, record=record.to_dict())))
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.project_dir = kwargs.get('project_dir')
+
+            def set_project_dir(self, project):
+                self.project_dir = project
+
+            def resolve_annotations(self, annotations):
+                return None, None
+
+            def run(self, **kwargs):
+                manager.pipeline_project = self.project_dir
+                return SimpleNamespace(error=None, record=record.to_dict())
+
+        monkeypatch.setattr(application, 'get_project_dir', lambda: str(tmp_path))
+        monkeypatch.setattr(application, 'ContextOrchestrator', FakeOrchestrator)
 
         class InlineThread:
             def __init__(self, target, args=(), **kwargs):
@@ -125,8 +143,11 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
             health=offline, list_sessions=offline))
     monkeypatch.setattr(application.signal, 'signal', lambda *a: None)
     monkeypatch.setattr(application.sys, 'exit', lambda *a: None)
-    import keyboard
-    monkeypatch.setattr(keyboard, 'add_hotkey', lambda *a: None)
+    def make_shortcut(key, press, release, **kwargs):
+        registered[key] = press
+        return SimpleNamespace(register=lambda: None, close=lambda: None)
+    monkeypatch.setattr(application, 'HoldShortcut', make_shortcut)
+    monkeypatch.setattr(application, 'MainThreadDispatcher', lambda: SimpleNamespace(submit=lambda callback: callback()))
     application.main()
     return manager
 
@@ -171,3 +192,16 @@ def test_stale_screenshot_failure_does_not_escape_or_fail_new_session(monkeypatc
     manager = run_fake_application(monkeypatch, tmp_path, replace_session=True)
     assert manager.active_session.state == CaptureState.STARTING
     assert manager.active_session.error is None
+
+
+def test_global_escape_cancels_pending_transcription_after_overlay_hides(monkeypatch, tmp_path):
+    from arrow.capture.session import CaptureState
+    manager = run_fake_application(monkeypatch, tmp_path, fail_screenshot=False, cancel_pending=True)
+    assert manager.active_session.state == CaptureState.CANCELLED
+
+
+def test_capture_keeps_release_time_repository_when_selection_changes_during_speech(monkeypatch, tmp_path):
+    other = tmp_path / 'other'
+    other.mkdir()
+    manager = run_fake_application(monkeypatch, tmp_path, fail_screenshot=False, switch_project=str(other))
+    assert manager.pipeline_project == str(tmp_path)

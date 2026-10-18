@@ -17,6 +17,29 @@ Microphone input requires a working recording device. Speech recognition uses
 Google's speech service. Agentation at `http://127.0.0.1:4747` is optional;
 captures remain available through MCP and direct providers when it is offline.
 
+## Capture and send
+
+Hold **Ctrl+Space**, draw around the source (and optionally a destination), and
+speak your complete instruction. Release either shortcut key to finish. Speech
+pauses do not end the capture. Arrow captures the screen immediately on release,
+then waits for transcription before showing the saved card. **Esc** cancels.
+The capture button also starts a session; use **Done** or **Enter** to finish it.
+
+Open the notch and select **⚙ Capture settings** to change the held shortcut and
+speech language. **Ctrl+Shift** works as a two-key alternative. Fn is usually
+handled by keyboard firmware, so it cannot be registered reliably. Preferences
+persist across restarts. If a chord conflicts with another application, choose
+another one in settings.
+
+Each card offers **Copy image + prompt**, **Image only**, **Prompt only**,
+**Codex**, and **Claude Code**. The combined clipboard includes actual annotated
+image pixels and prompt text. Some destination apps paste just one format; use
+the two separate copy buttons in that case. Select a repository with **📁** before
+direct sending. Install and sign in to the chosen CLI separately, then restart
+Arrow if PATH changed. Codex receives an image attachment; Claude receives the
+image in its stream input. Existing screenshots captured before this update
+retain their original pixels; make a new capture to test the drawing fix.
+
 ## Linux development and MCP
 
 Linux supports the test suite, headless Qt checks, and the MCP stdio server.

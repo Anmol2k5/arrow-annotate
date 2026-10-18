@@ -16,13 +16,16 @@ from arrow.providers.base import BaseCLIProvider, RunRequest
 class CodexProvider(BaseCLIProvider):
     name = "Codex"
     cli_name = "codex"
+    npm_package = "@openai/codex"
 
     def build_command(self, request: RunRequest) -> list[str]:
         # `codex exec` runs a non-interactive task with a prompt.
         command = [self.cli_name, "exec", "--sandbox", "workspace-write", "--cd", request.repository_path]
-        annotated = request.assets.get("agent-annotated") or request.assets.get("annotated")
-        if annotated and os.path.isfile(annotated):
-            command.extend(["--image", annotated])
+        for key in ("agent-annotated", "annotated"):
+            annotated = request.assets.get(key)
+            if annotated and os.path.isfile(annotated):
+                command.extend(["--image", annotated])
+                break
         return [*command, "--", request.prompt]
 
 

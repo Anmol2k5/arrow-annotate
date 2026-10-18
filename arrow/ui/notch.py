@@ -44,6 +44,7 @@ from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, set_project_dir
+from arrow.ui.clipboard import copy_capture
 
 log = logging.getLogger("arrow.ui.notch")
 
@@ -56,7 +57,7 @@ NOTCH_BORDER = "rgba(255, 255, 255, 12)"
 IDLE_W, IDLE_H = 80, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
-SCREENSHOTS_W, SCREENSHOTS_H = 760, 440
+SCREENSHOTS_W, SCREENSHOTS_H = 760, 640
 
 TOP_OFFSET = 8
 ANIM_MS = 350
@@ -364,7 +365,8 @@ class ScreenshotThumbnail(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setFixedSize(320, 400)
+        self.setFixedWidth(320)
+        self.setMinimumHeight(490)
         self.setStyleSheet("""
             ScreenshotThumbnail {
                 background: #18181b;
@@ -465,23 +467,9 @@ class ScreenshotThumbnail(QFrame):
         try:
             pix = QPixmap(self._path)
             if not pix.isNull():
-                scaled = pix.scaled(320, 160, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-                x = (scaled.width() - 320) // 2
-                y = (scaled.height() - 160) // 2
-                cropped = scaled.copy(x, y, 320, 160)
-
-                rounded = QPixmap(320, 160)
-                rounded.fill(Qt.GlobalColor.transparent)
-                painter = QPainter(rounded)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(QRectF(0, 0, 320, 160), 12, 12)
-                path.addRect(QRectF(0, 12, 320, 148))
-                painter.setClipPath(path)
-                painter.drawPixmap(0, 0, cropped)
-                painter.end()
-
-                self._img_label.setPixmap(rounded)
+                scaled = pix.scaled(320, 160, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+                self._img_label.setPixmap(scaled)
                 self._preview = pix
         except Exception:
             pass
@@ -521,28 +509,29 @@ class ScreenshotThumbnail(QFrame):
         header.addStretch()
         v.addLayout(header)
 
-        # Action row: edit the instruction, copy the request, or send it
-        # straight to a coding agent.
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(6)
+        edit_row.addWidget(self._action_button("Edit", self._edit_instruction))
+        edit_row.addWidget(self._action_button("Copy image + prompt", self._copy_request))
+        v.addLayout(edit_row)
 
-        edit_btn = self._action_button("✏️ Edit", self._edit_instruction)
-        btn_row.addWidget(edit_btn)
+        copy_row = QHBoxLayout()
+        copy_row.addWidget(self._action_button("Image only", lambda: self._copy_request('image')))
+        copy_row.addWidget(self._action_button("Prompt only", lambda: self._copy_request('text')))
+        v.addLayout(copy_row)
 
-        copy_btn = self._action_button("📋 Copy", self._copy_request)
-        btn_row.addWidget(copy_btn)
-
+        send_row = QHBoxLayout()
         self._provider_buttons = {}
         for name in ("Codex", "Claude Code"):
             btn = self._action_button(f"▶ {name}", lambda _=False, n=name: self._send_to_provider(n))
-            btn.setEnabled(self._provider_available(name))
-            if not btn.isEnabled():
-                btn.setToolTip(f"{name} CLI not found on PATH")
+            btn.setToolTip(f"Send prompt and annotated image to {name} in the selected repository")
             self._provider_buttons[name] = btn
-            btn_row.addWidget(btn)
-
-        btn_row.addStretch()
-        v.addLayout(btn_row)
+            send_row.addWidget(btn)
+        v.addLayout(send_row)
+        self._action_status = QLabel("")
+        self._action_status.setWordWrap(True)
+        self._action_status.setStyleSheet("color: #94A3B8; font-size: 10px; border: none;")
+        v.addWidget(self._action_status)
 
         # Refreshable info section (summary / source→destination / likely file).
         self._info_widget = QWidget()
@@ -578,7 +567,7 @@ class ScreenshotThumbnail(QFrame):
         src = _anchor_label(cr.get("source") or {})
         dst = _anchor_label(cr.get("destination") or {})
         if src or dst:
-            arrow_lbl = QLabel(f"{src or '…'}  →  {dst or '…'}")
+            arrow_lbl = QLabel(f"{src}  →  {dst}" if src and dst else src or dst)
             arrow_lbl.setWordWrap(True)
             arrow_lbl.setStyleSheet("color: #7DD3FC; font-size: 11px; font-weight: 500; border: none;")
             self._info_v.addWidget(arrow_lbl)
@@ -651,14 +640,21 @@ class ScreenshotThumbnail(QFrame):
         except Exception:
             return False
 
-    def _copy_request(self):
-        """Copy a paste-ready change request (with screenshot path) to the clipboard."""
-        text = format_change_request(self._change_request)
-        if not text:
+    def _copy_request(self, mode='both'):
+        # QPushButton.clicked may pass a checked boolean.
+        if isinstance(mode, bool):
+            mode = 'both'
+        text = format_change_request(self._change_request) or self._text
+        try:
+            copy_capture(text, self._path, mode=mode)
+        except ValueError as exc:
+            self._action_status.setText(str(exc))
             return
-        if self._path:
-            text += f"\n**Screenshot:** {self._path}"
-        QApplication.clipboard().setText(text)
+        messages = {
+            'both': "Image + prompt copied. If your app pastes only one, use Image only / Prompt only.",
+            'image': "Annotated image copied.", 'text': "Prompt copied.",
+        }
+        self._action_status.setText(messages[mode])
 
     def _send_to_provider(self, name: str):
         """Send the compiled change request straight to Codex / Claude Code."""
@@ -686,7 +682,8 @@ class ScreenshotThumbnail(QFrame):
             QMessageBox.warning(self, "Send", str(e))
             return
         if not provider.detect():
-            QMessageBox.warning(self, name, f"{name} CLI was not found on PATH.")
+            QMessageBox.warning(self, name, f"{name} CLI was not found on PATH. "
+                                "Install and sign in to the CLI, then restart Arrow if PATH changed.")
             return
 
         self._set_sending(True, name)
@@ -697,7 +694,10 @@ class ScreenshotThumbnail(QFrame):
     def _run_provider_thread(self, provider, request, name: str):
         final = run_provider_sync(provider, request)
         # Emitting a queued signal is thread-safe and delivers on the main thread.
-        self.provider_finished.emit(final, request, name)
+        try:
+            self.provider_finished.emit(final, request, name)
+        except RuntimeError:
+            log.info("Provider completed after its capture card was closed")
 
     def _on_provider_finished(self, final, request, name: str):
         self._set_sending(False, name)
@@ -711,10 +711,8 @@ class ScreenshotThumbnail(QFrame):
         for n, btn in getattr(self, "_provider_buttons", {}).items():
             btn.setEnabled(not active)
             btn.setText(f"⏳ {n}" if active else f"▶ {n}")
-        if not active and self._provider_buttons:
-            for n, btn in self._provider_buttons.items():
-                if not self._provider_available(n):
-                    btn.setEnabled(False)
+        if hasattr(self, '_action_status'):
+            self._action_status.setText(f"Sending image and prompt to {name}…" if active else "")
 
     def mouseDoubleClickEvent(self, event):
         if self._preview:
@@ -791,7 +789,9 @@ class ScreenshotsView(QWidget):
         repo_btn.clicked.connect(self._select_repository)
         top.addWidget(repo_btn)
 
-        doc_btn = QPushButton("📄")
+        doc_btn = QPushButton("⚙")
+        doc_btn.setToolTip("Capture settings: shortcut and speech language")
+        doc_btn.clicked.connect(self._settings)
         doc_btn.setFixedSize(36, 36)
         doc_btn.setStyleSheet("""
             QPushButton {
@@ -840,7 +840,7 @@ class ScreenshotsView(QWidget):
 
         row2.addStretch()
 
-        copy_btn = QPushButton("📄 Copy all")
+        copy_btn = QPushButton("📄 Copy all prompts")
         copy_btn.setFixedHeight(32)
         copy_btn.setStyleSheet("""
             QPushButton {
@@ -922,6 +922,11 @@ class ScreenshotsView(QWidget):
         else:
             self._repo_lbl.setText("")
             self._repo_lbl.setToolTip("")
+
+    def _settings(self):
+        callback = getattr(self.window(), "on_settings_requested", None)
+        if callback:
+            callback()
 
     def _highlight(self):
         parent_notch = self.window()
@@ -1149,8 +1154,10 @@ class DynamicNotch(QWidget):
             return QRect(0, 0, self._expanded_size[0], self._expanded_size[1])
         ag = screen.availableGeometry()
         ew, eh = self._expanded_size
+        ew = min(ew, max(1, ag.width() - 16))
+        eh = min(eh, max(1, ag.height() - TOP_OFFSET - 8))
         x = ag.center().x() - ew // 2
-        y = TOP_OFFSET
+        y = ag.y() + TOP_OFFSET
         return QRect(x, y, ew, eh)
 
     # ------------------------------------------------------------------
@@ -1253,7 +1260,7 @@ class DynamicNotch(QWidget):
         """Reload screenshots from CaptureStore into the ScreenshotsView."""
         self._screens_view._scan_existing()
 
-    def auto_expand_briefly(self, duration_ms: int = 1500):
+    def auto_expand_briefly(self, duration_ms: int = 4000):
         """Expand the notch to Screens tab, then auto-collapse after duration_ms."""
         self.expand(tab="screens")
         # Set up auto-collapse timer

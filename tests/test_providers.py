@@ -176,9 +176,13 @@ def test_codex_command_uses_explicit_sandbox_and_image_attachment(tmp_path):
 
 
 def test_claude_prompt_cannot_be_interpreted_as_cli_option(tmp_path):
-    command = ClaudeProvider(which_fn=_which_yes).build_command(RunRequest(
-        capture_id='c', repository_path=str(tmp_path), prompt='--dangerously-skip-permissions'))
-    assert command[-2:] == ['--', '--dangerously-skip-permissions']
+    import json
+
+    request = RunRequest(capture_id='c', repository_path=str(tmp_path), prompt='--dangerously-skip-permissions')
+    provider = ClaudeProvider(which_fn=_which_yes)
+    assert request.prompt not in provider.build_command(request)
+    content = json.loads(provider.build_stdin(request))['message']['content']
+    assert content[0] == {'type': 'text', 'text': request.prompt}
 
 
 def test_provider_cannot_replace_a_running_process(tmp_path):

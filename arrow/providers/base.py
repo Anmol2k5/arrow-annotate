@@ -23,6 +23,7 @@ Execution rules enforced here:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -31,6 +32,7 @@ import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from pydantic import BaseModel, Field
@@ -137,6 +139,7 @@ class BaseCLIProvider(Provider):
     """
 
     cli_name: str = ""
+    npm_package: str = ""
 
     def __init__(
         self,
@@ -148,6 +151,7 @@ class BaseCLIProvider(Provider):
         self._which = which_fn
         self._popen = popen_fn or subprocess.Popen
         self._process: Optional[subprocess.Popen] = None
+        self._stdin_payload: Optional[str] = None
         self._status = ProviderStatus.IDLE
         self._lock = threading.Lock()
 
@@ -170,6 +174,45 @@ class BaseCLIProvider(Provider):
     def build_command(self, request: RunRequest) -> list[str]:  # pragma: no cover - overridden
         raise NotImplementedError
 
+    def build_stdin(self, request: RunRequest) -> Optional[str]:
+        """Return a one-shot stdin payload, or None for argv-only providers."""
+        return None
+
+    def _resolve_command(self, command: list[str]) -> list[str]:
+        """Bypass Windows npm shell shims using their package's declared bin."""
+        executable = self._which(command[0]) or command[0]
+        shim = Path(executable)
+        if shim.suffix.lower() not in {".cmd", ".bat"}:
+            return [executable, *command[1:]]
+        if not self.npm_package:
+            raise RuntimeError("Cannot launch a shell wrapper as a provider executable")
+
+        modules = shim.parent.parent if shim.parent.name == ".bin" else shim.parent / "node_modules"
+        package = (modules / self.npm_package).resolve()
+        try:
+            manifest = json.loads((package / "package.json").read_text(encoding="utf-8"))
+            declared_bin = manifest["bin"]
+            entry = declared_bin[self.cli_name] if isinstance(declared_bin, dict) else declared_bin
+            if not isinstance(entry, str):
+                raise ValueError("bin entry is not a path")
+            target = (package / entry).resolve()
+            if not target.is_relative_to(package) or not target.is_file():
+                raise ValueError("bin entry is missing or outside its package")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"Cannot resolve {self.cli_name} npm installation: {exc}") from exc
+
+        # New Claude npm releases declare a native executable; older releases
+        # and Codex declare JavaScript. Neither path needs cmd.exe or shell=True.
+        if target.suffix.lower() == ".exe":
+            return [str(target), *command[1:]]
+        if target.suffix.lower() not in {".js", ".cjs", ".mjs"}:
+            raise RuntimeError(f"Unsupported {self.cli_name} npm executable: {target.name}")
+        adjacent_node = shim.parent / "node.exe"
+        node = str(adjacent_node) if adjacent_node.is_file() else self._which("node")
+        if not node or Path(node).suffix.lower() in {".cmd", ".bat", ".ps1"}:
+            raise RuntimeError(f"Node.js executable not found for {self.cli_name} npm installation")
+        return [node, str(target), *command[1:]]
+
     def start_run(self, request: RunRequest) -> None:
         with self._lock:
             if self._status == ProviderStatus.RUNNING or (self._process and self._process.poll() is None):
@@ -179,34 +222,71 @@ class BaseCLIProvider(Provider):
                 self._status = ProviderStatus.FAILED
                 raise RuntimeError(validation.reason)
 
-            command = self.build_command(request)
-            # Never use shell=True; confine cwd to the repository.
-            log.info("Starting %s run in %s", self.name, request.repository_path)
-            self._process = self._popen(
-                command,
-                cwd=request.repository_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            try:
+                command = self._resolve_command(self.build_command(request))
+                self._stdin_payload = self.build_stdin(request)
+                # Never use shell=True; confine cwd to the repository. Prevent
+                # argv-only CLIs from accidentally consuming the parent's stdin.
+                log.info("Starting %s run in %s", self.name, request.repository_path)
+                self._process = self._popen(
+                    command,
+                    cwd=request.repository_path,
+                    stdin=subprocess.PIPE if self._stdin_payload is not None else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    bufsize=1,
+                )
+            except Exception:
+                self._status = ProviderStatus.FAILED
+                raise
             self._status = ProviderStatus.RUNNING
 
     def stream_events(self) -> Iterator[ProviderEvent]:
-        if self._process is None:
+        process = self._process
+        if process is None:
             return
         yield ProviderEvent(type="status", message="Sending context")
-        stdout = self._process.stdout
+        payload = self._stdin_payload
+        input_errors: list[Exception] = []
+        writer = None
+        if payload is not None:
+            def send_input():
+                try:
+                    if process.stdin is None:
+                        raise RuntimeError("Provider stdin is unavailable")
+                    process.stdin.write(payload)
+                except Exception as exc:
+                    input_errors.append(exc)
+                finally:
+                    if process.stdin is not None:
+                        try:
+                            process.stdin.close()
+                        except Exception as exc:
+                            input_errors.append(exc)
+
+            # Drain stdout concurrently: an image can exceed pipe capacity while
+            # the child is still emitting startup output. Never hold _lock while
+            # writing so cancel_run can terminate a child that is not reading.
+            writer = threading.Thread(target=send_input, daemon=True)
+            writer.start()
+        stdout = process.stdout
         if stdout is not None:
             for line in stdout:
                 line = line.rstrip("\n")
                 if line:
                     yield ProviderEvent(type="log", message=line)
-        return_code = self._process.wait()
+        return_code = process.wait()
+        if writer is not None:
+            writer.join()
         if self._status == ProviderStatus.CANCELLED:
             yield ProviderEvent(type="done", message="Cancelled")
             return
-        if return_code == 0:
+        if return_code == 0 and input_errors:
+            self._status = ProviderStatus.FAILED
+            yield ProviderEvent(type="error", message=f"Failed to send provider stdin: {input_errors[0]}")
+        elif return_code == 0:
             self._status = ProviderStatus.COMPLETED
             yield ProviderEvent(type="done", message="Completed")
         else:

@@ -381,3 +381,32 @@ def test_pipeline_does_not_claim_missing_react_file_is_resolved(tmp_path, monkey
     assert result.error is None
     assert result.source.mapping.get('resolved') is False
     assert result.change_request['likely_files'] == []
+
+
+def test_explicit_empty_scene_saves_clean_screenshot_without_fake_rectangle(tmp_path):
+    session = CaptureSession(annotation_scene_frozen=True)
+    orch = make_orchestrator(tmp_path)
+    raw = make_raw()
+    result = orch.run(session=session, rect={'x': 0, 'y': 0, 'width': W, 'height': H},
+                      instruction='Explain this screen', raw_img=raw,
+                      screen_info=make_mapper().screens[0], mapper=make_mapper())
+    assert result.error is None
+    assert result.source is None
+    assert session.annotations == []
+    with Image.open(result.annotated_path) as annotated:
+        assert annotated.convert('RGB').tobytes() == raw.tobytes()
+
+
+def test_resolution_captured_at_release_is_used_after_speech_finishes(tmp_path):
+    bridge = FakeBridge(BROWSER_ELEMENT)
+    orch = make_orchestrator(tmp_path, bridge=bridge)
+    session = CaptureSession(annotation_scene_frozen=True)
+    session.annotations = [source_annotation(session.capture_id)]
+    resolved = orch.resolve_annotations(session.annotations)
+    bridge._element = {**BROWSER_ELEMENT, 'selector': 'button#different-page'}
+    result = orch.run(session=session, rect={'x': 100, 'y': 100, 'width': 200, 'height': 60},
+                      instruction='Move the original button', raw_img=make_raw(),
+                      screen_info=make_mapper().screens[0], mapper=make_mapper(),
+                      resolved_anchors=resolved)
+    assert result.error is None
+    assert result.source.context['selector'] == 'button#pricing-cta'

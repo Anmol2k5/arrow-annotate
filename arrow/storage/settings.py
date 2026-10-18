@@ -1,6 +1,6 @@
 """Persisted application settings.
 
-Currently stores the user-selected project directory so the orchestrator can
+Stores capture preferences and the user-selected project directory so the orchestrator can
 collect repository context (branch, commit, framework) and one-click provider
 runs stay confined to the right repository. Backed by a small JSON file under
 ``~/.arrow`` (override with ``ARROW_HOME``).
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from typing import Optional
 
 log = logging.getLogger("arrow.storage.settings")
@@ -36,8 +37,22 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    with open(config_path(), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    temporary_path = None
+    try:
+        # Replace from the same directory so a failed write cannot truncate
+        # the user's previous project or capture preferences.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=config_dir(), prefix="config.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_path = stream.name
+            json.dump(data, stream, indent=2)
+        os.replace(temporary_path, config_path())
+    finally:
+        if temporary_path is not None:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
 
 
 def get_project_dir() -> Optional[str]:
@@ -59,4 +74,32 @@ def set_project_dir(path: str) -> None:
     _save(data)
 
 
-__all__ = ["config_dir", "config_path", "get_project_dir", "set_project_dir"]
+DEFAULT_CAPTURE_SHORTCUT = "ctrl+space"
+DEFAULT_SPEECH_LANGUAGE = "en-IN"
+SPEECH_LANGUAGES = ("en-IN", "hi-IN", "en-US")
+
+
+def get_capture_shortcut() -> str:
+    """The held capture shortcut, defaulting to Ctrl+Space."""
+    value = _load().get("capture_shortcut")
+    return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_CAPTURE_SHORTCUT
+
+
+def get_speech_language() -> str:
+    """The preferred recognition language, defaulting to Indian English."""
+    value = _load().get("speech_language")
+    return value if value in SPEECH_LANGUAGES else DEFAULT_SPEECH_LANGUAGE
+
+
+def set_capture_preferences(shortcut: str, language: str) -> None:
+    """Persist preferences after the caller validates/registers the shortcut."""
+    data = _load()
+    data["capture_shortcut"] = shortcut.strip()
+    data["speech_language"] = language
+    _save(data)
+
+
+__all__ = [
+    "config_dir", "config_path", "get_project_dir", "set_project_dir",
+    "get_capture_shortcut", "get_speech_language", "set_capture_preferences",
+]

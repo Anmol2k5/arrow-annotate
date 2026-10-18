@@ -4,7 +4,9 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from arrow.capture.session import Annotation, generate_uuidv7
 
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
@@ -34,6 +36,16 @@ class Stroke:
         self.role = role  # "source" | "destination"
         self.points: List[StrokePoint] = []
         self.locked = False
+
+
+class OverlaySelectionResult:
+    """Serializable capture bounds and the freehand scene used for export."""
+
+    def __init__(self, result: dict):
+        self._result = result
+
+    def to_dict(self) -> dict:
+        return self._result
 
 
 def stroke_rect(points: List[QPointF], offset: QPointF, pad: int = 100) -> Optional[dict]:
@@ -73,18 +85,20 @@ class SelectionOverlay(QWidget):
 
     First stroke becomes the *source* (marker ``1``), the second becomes the
     *destination* (marker ``2``). A connecting arrow is drawn between them.
-    Locked strokes persist until the capture is saved or cancelled — the comet
-    tail fade only applies to the stroke currently being drawn.
+    All stroke points persist until the capture is saved or cancelled. Only
+    the live pointer decoration fades; the annotation itself stays visible.
     """
 
-    # How long the comet tail survives after being drawn (seconds).
+    # How long the live pointer decoration survives (seconds).
     TRAIL_SECONDS = 2.0
     # Subdivision steps per raw segment for Catmull-Rom smoothing.
     SUBDIVISION = 6
     # How many alpha buckets the fading tail is split into when stroking.
     FADE_BUCKETS = 14
 
-    selection_complete = pyqtSignal(object)  # emits a pseudo-SelectionResult with bounding rect(s)
+    selection_complete = pyqtSignal(object)
+    finish_requested = pyqtSignal()
+    cancel_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -95,6 +109,7 @@ class SelectionOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._strokes: List[Stroke] = []
         self._current_stroke: Optional[Stroke] = None
@@ -106,6 +121,23 @@ class SelectionOverlay(QWidget):
         self._fade_timer.start(16)  # ~60fps
 
         self._offset = QPointF(0, 0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 48, 16, 16)
+        toolbar = QFrame(self)
+        toolbar.setStyleSheet(
+            "QFrame {background: #18181b; border-radius: 12px;} "
+            "QLabel {color: #e2e8f0; padding: 8px;} "
+            "QPushButton {color: white; background: #334155; border-radius: 8px; padding: 8px 12px;}"
+        )
+        row = QHBoxLayout(toolbar)
+        row.addWidget(QLabel("Draw and speak · Release shortcut / Enter to finish · Esc to cancel"))
+        for text, signal in (("Done", self.finish_requested), ("Cancel", self.cancel_requested)):
+            button = QPushButton(text)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda checked=False, target=signal: target.emit())
+            row.addWidget(button)
+        layout.addWidget(toolbar, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
 
     def get_gesture_trail(self) -> list[dict]:
         """Export all locked strokes as serializable gesture data.
@@ -152,39 +184,57 @@ class SelectionOverlay(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+        self.setFocus()
 
     @pyqtSlot()
     def hide_overlay(self):
-        """Called when hotkey is released; emits the completed selection."""
+        """Finish once, hide the UI, and export the actual drawn scene."""
+        if not self._active:
+            self.hide()
+            return
+        self._active = False
+        self._finalize_stroke()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+        geom = self.geometry()
+        result = {
+            "x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height(),
+            "source": None, "annotations": [],
+        }
+        for order, stroke in enumerate(self._strokes, start=1):
+            if not stroke.locked or not stroke.points:
+                continue
+            bounds = stroke_rect([p.point for p in stroke.points], self._offset, pad=8)
+            points = [{"x": p.point.x() + self._offset.x(),
+                       "y": p.point.y() + self._offset.y()} for p in stroke.points]
+            annotation = Annotation(
+                id=generate_uuidv7(), type="freehand", role=stroke.role,
+                geometry={**bounds, "points": points}, order=order,
+            )
+            result["annotations"].append(annotation.model_dump())
+            result[stroke.role] = bounds
+            if stroke.role == "source":
+                result.update(bounds)
+        self.selection_complete.emit(OverlaySelectionResult(result))
+
+    @pyqtSlot()
+    def cancel_overlay(self):
+        """Discard this scene without emitting a completed selection."""
         self._active = False
         self._is_drawing = False
+        self._current_stroke = None
+        self._strokes.clear()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()
 
-        def _mock(result):
-            class MockResult:
-                def __init__(self, r): self.r = r
-                def to_dict(self): return self.r
-            return MockResult(result)
-
-        locked = [s for s in self._strokes if s.locked]
-        source = next((s for s in locked if s.role == "source"), None)
-
-        if source is not None:
-            source_rect = stroke_rect([p.point for p in source.points], self._offset)
-            dest = next((s for s in locked if s.role == "destination"), None)
-
-            result: dict = dict(source_rect or {})
-            result["source"] = source_rect
-            if dest is not None:
-                dest_rect = stroke_rect([p.point for p in dest.points], self._offset)
-                if dest_rect:
-                    result["destination"] = dest_rect
-            self.selection_complete.emit(_mock(result))
-        else:
-            # No stroke drawn → full screen fallback
-            geom = self.geometry()
-            rect = {"x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height()}
-            self.selection_complete.emit(_mock(rect))
+    def _finalize_stroke(self):
+        self._is_drawing = False
+        if self._current_stroke is not None:
+            if self._current_stroke.points:
+                self._current_stroke.locked = True
+                self._strokes.append(self._current_stroke)
+            self._current_stroke = None
 
     # ------------------------------------------------------------------
     # Mouse input
@@ -195,7 +245,7 @@ class SelectionOverlay(QWidget):
         return "destination" if has_source else "source"
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._active and event.button() == Qt.MouseButton.LeftButton:
             self._is_drawing = True
             role = self._next_role()
             # A new stroke replaces an earlier stroke of the same role
@@ -226,33 +276,31 @@ class SelectionOverlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._is_drawing = False
             if self._current_stroke is not None:
-                self._current_stroke.locked = True
-                self._strokes.append(self._current_stroke)
-                self._current_stroke = None
+                endpoint = event.globalPosition() - self._offset
+                if not self._current_stroke.points or self._current_stroke.points[-1].point != endpoint:
+                    self._current_stroke.points.append(StrokePoint(endpoint))
+            self._finalize_stroke()
             self.update()
 
+    def keyPressEvent(self, event):
+        if self._active and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.finish_requested.emit()
+            event.accept()
+        elif self._active and event.key() == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
     # ------------------------------------------------------------------
-    # Fade timer (comet tail applies only to the active stroke)
+    # Pointer animation timer
     # ------------------------------------------------------------------
 
     def _update_fade(self):
-        now = time.time()
-        changed = False
-
-        if self._current_stroke is not None:
-            orig_len = len(self._current_stroke.points)
-            self._current_stroke.points = [
-                p for p in self._current_stroke.points if now - p.timestamp < self.TRAIL_SECONDS
-            ]
-            changed = len(self._current_stroke.points) != orig_len or bool(self._current_stroke.points)
-
-        has_live = self._current_stroke is not None and bool(self._current_stroke.points)
-        if changed or self._strokes or has_live:
+        # Animation must never discard points from the captured annotation.
+        if self._active and self._current_stroke is not None:
             self.update()
-        elif not self._active and not self._strokes:
-            self.hide()
 
     # ------------------------------------------------------------------
     # Trail smoothing (Catmull-Rom)
@@ -469,6 +517,13 @@ class SelectionOverlay(QWidget):
         
         now = time.time()
 
+        for stroke in self._strokes + ([self._current_stroke] if self._current_stroke else []):
+            if len(stroke.points) == 1:
+                rgb = SOURCE_RGB if stroke.role == "source" else DEST_RGB
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(*rgb))
+                painter.drawEllipse(stroke.points[0].point, 4, 4)
+
         locked = [s for s in self._strokes if s.locked and len(s.points) >= 2]
 
         # Persistent annotation scene: both strokes at full opacity.
@@ -489,10 +544,11 @@ class SelectionOverlay(QWidget):
                 if c1 is not None and c2 is not None:
                     self._draw_arrow(painter, c1, c2)
 
-        # Live stroke: fading comet tail.
+        # Keep the complete live annotation visible, with an animated pointer.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 2:
-            trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
+            trail = self._build_trail(self._current_stroke.points, now, trail_seconds=1e9)
             self._stroke_trail(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
-            self._draw_pointer_head(painter, trail, ACTIVE_RGB, ACTIVE_CORE)
+            pointer_trail = self._build_trail(self._current_stroke.points, now, self.TRAIL_SECONDS)
+            self._draw_pointer_head(painter, pointer_trail, ACTIVE_RGB, ACTIVE_CORE)
 
         painter.end()

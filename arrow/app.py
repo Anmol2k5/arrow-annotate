@@ -3,19 +3,29 @@ import logging
 import signal
 import sys
 import threading
+from concurrent.futures import Future
+from copy import copy
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 
+from arrow.capture.coordinator import CaptureCoordinator
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
 from arrow.context.orchestrator import ContextOrchestrator
+from arrow.core.hotkeys import HoldShortcut
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
-from arrow.storage.settings import get_project_dir
+from arrow.storage.settings import (
+    get_capture_shortcut,
+    get_project_dir,
+    get_speech_language,
+    set_capture_preferences,
+)
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
+from arrow.ui.settings_dialog import CaptureSettingsDialog
 from arrow.ui.voice_input import VoiceInput
 
 log = logging.getLogger("arrow.app")
@@ -91,131 +101,49 @@ def main():
 
     # -- Setup Highlight Overlay & Voice Input --
     overlay = SelectionOverlay()
-    voice = VoiceInput()
+    voice = VoiceInput(language=get_speech_language())
     app.aboutToQuit.connect(voice.stop_listening)
     app.aboutToQuit.connect(server.stop)
 
     # -- Setup Session Manager --
     session_manager = SessionManager()
 
-    current_voice_text = ""
-    is_annotating = False
+    capture_context = {}
 
-    def toggle_annotation():
-        nonlocal is_annotating, current_voice_text
-        if not is_annotating:
-            is_annotating = True
-            current_voice_text = ""
-            
-            # Start new capture session
-            session = session_manager.start_session()
-            capture_id = session.capture_id
-            
-            # Transition to ANNOTATING
-            session_manager.transition_to(CaptureState.ANNOTATING)
-
-            QTimer.singleShot(0, overlay.show_overlay)
-            # Pass capture_id to voice input
-            QTimer.singleShot(0, lambda: voice.start_listening(capture_id))
-            # Show waveform in notch idle pill
-            QTimer.singleShot(0, lambda: notch.set_recording(True))
-        else:
-            is_annotating = False
-            QTimer.singleShot(0, overlay.hide_overlay)
-            QTimer.singleShot(0, voice.stop_listening)
-            # Restore logo in notch idle pill
-            QTimer.singleShot(0, lambda: notch.set_recording(False))
-            
-            # If no selection comes, cancellation is handled in hide_overlay/on_selection
-
-    notch.on_highlight_requested = toggle_annotation
-    notch.on_project_selected = orchestrator.set_project_dir
-
-    def on_voice_result(text, capture_id):
-        nonlocal current_voice_text, is_annotating
+    def snapshot(result):
+        data = result.to_dict()
         session = session_manager.active_session
-        if not session or session.capture_id != capture_id:
-            return
-        
-        current_voice_text = text
-        if is_annotating:
-            toggle_annotation()  # triggers hide_overlay -> selection_complete
-
-    def on_voice_error(err, capture_id):
-        nonlocal is_annotating
-        session = session_manager.active_session
-        if not session or session.capture_id != capture_id:
-            return
-        log.error("Voice error: %s", err)
-        if is_annotating:
-            toggle_annotation()
-
-    voice.result_ready.connect(on_voice_result)
-    voice.error.connect(on_voice_error)
-
-    def on_selection(result):
-        """Full capture flow when overlay selection completes."""
-        nonlocal current_voice_text
-
-        session = session_manager.active_session
-        if not session:
-            return
-        
-        capture_id = session.capture_id
-        
-        try:
-            session_manager.transition_to(CaptureState.COLLECTING_CONTEXT, capture_id=capture_id)
-        except ValueError:
-            return
-
-        # Capture the voice text before it gets reset
-        voice_text = current_voice_text
-        # Grab cursor + window title on main thread context
-        cursor_x, cursor_y = _get_cursor_position()
-        window_title = _get_foreground_title()
-
-        # Capture raw screenshot on main thread (with overlay auto-hiding)
+        session.annotations = [Annotation.model_validate(item) for item in data.get("annotations", [])]
+        session.annotation_scene_frozen = True
         screenshot_service = ScreenshotService()
+        # Exclude both Arrow windows from the saved screenshot.
+        visible = notch.isVisible()
+        notch.hide()
         try:
             raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
-        except Exception as exc:
-            log.exception("Screenshot capture failed")
-            session.error = str(exc)
+        finally:
+            if visible:
+                notch.show()
+        # Keep this capture bound to the repository selected at release.
+        capture_pipeline = copy(orchestrator)
+        anchors = Future()
+        def resolve_context():
             try:
-                session_manager.transition_to(CaptureState.FAILED, capture_id=capture_id)
-            except ValueError:
-                return
-            notch.set_status(f"Capture failed: {exc}")
-            return
+                anchors.set_result(capture_pipeline.resolve_annotations(session.annotations))
+            except Exception as exc:
+                anchors.set_exception(exc)
+        threading.Thread(target=resolve_context, daemon=True).start()
+        return data, raw_img, screen_info, mapper, dict(capture_context), anchors, capture_pipeline
 
-        # Create annotations from the overlay result (source + optional destination)
-        data = result.to_dict()
-        source_rect = data.get("source") or data
-        dest_rect = data.get("destination")
-        rect = source_rect
-
-        annotations = [
-            Annotation(
-                id=f"ann_src_{capture_id}",
-                type="rectangle",
-                role="source",
-                label="Current element",
-                geometry={"x": source_rect["x"], "y": source_rect["y"],
-                          "width": source_rect["width"], "height": source_rect["height"]}
-            )
-        ]
-        if dest_rect:
-            annotations.append(
-                Annotation(
-                    id=f"ann_dst_{capture_id}",
-                    type="rectangle",
-                    role="destination",
-                    label="Move here",
-                    geometry={"x": dest_rect["x"], "y": dest_rect["y"],
-                              "width": dest_rect["width"], "height": dest_rect["height"]}
-                )
-            )
-        session.annotations = annotations
+    def on_ready(session, frame, voice_text):
+        capture_id = session.capture_id
+        data, raw_img, screen_info, mapper, context, anchors, capture_pipeline = frame
+        rect = data.get("source") or {
+            "x": screen_info.x, "y": screen_info.y,
+            "width": screen_info.w, "height": screen_info.h,
+        }
+        cursor_x, cursor_y = context.get("cursor", (0, 0))
+        window_title = context.get("window_title", "")
 
         def _capture_task():
             if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
@@ -230,7 +158,12 @@ def main():
                 # Run the full pipeline: resolve anchors (browser DOM → UIA),
                 # collect repository context, render annotated screenshot +
                 # crops, compile the change request, persist the record.
-                pipeline = orchestrator.run(
+                try:
+                    resolved_anchors = anchors.result(timeout=12)
+                except Exception:
+                    log.warning("Element evidence unavailable; using screenshot context", exc_info=True)
+                    resolved_anchors = (None, None)
+                pipeline = capture_pipeline.run(
                     session=session,
                     rect=rect,
                     instruction=voice_text,
@@ -239,6 +172,7 @@ def main():
                     raw_img=raw_img,
                     screen_info=screen_info,
                     mapper=mapper,
+                    resolved_anchors=resolved_anchors,
                 )
             except Exception as e:
                 log.error("Capture pipeline failed: %s", e)
@@ -277,7 +211,13 @@ def main():
             record = CaptureRecord.from_dict(pipeline.record)
             threading.Thread(target=_send_to_agentation, args=(record, capture_id), daemon=True).start()
 
-        threading.Thread(target=_capture_task, daemon=True).start()
+        def run_capture():
+            try:
+                _capture_task()
+            finally:
+                ui_dispatcher.submit(lambda: coordinator.done(capture_id))
+
+        threading.Thread(target=run_capture, daemon=True).start()
 
     def _send_to_agentation(record, capture_id):
         if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
@@ -320,30 +260,64 @@ def main():
                 except ValueError:
                     pass
 
-    overlay.selection_complete.connect(on_selection)
+    coordinator = CaptureCoordinator(session_manager, overlay, voice, notch, snapshot, on_ready)
 
-    # Optional global hotkey
+    def begin_capture():
+        if not coordinator.busy and not QApplication.activeModalWidget():
+            capture_context["cursor"] = _get_cursor_position()
+            capture_context["window_title"] = _get_foreground_title()
+            coordinator.start()
+
+    def toggle_capture():
+        if coordinator.recording:
+            coordinator.finish()
+        else:
+            begin_capture()
+
+    notch.on_highlight_requested = toggle_capture
+    notch.on_project_selected = orchestrator.set_project_dir
+    shortcut = HoldShortcut(
+        get_capture_shortcut(),
+        lambda: ui_dispatcher.submit(begin_capture),
+        lambda: ui_dispatcher.submit(coordinator.finish),
+    )
     try:
-        import keyboard
-        keyboard.add_hotkey("ctrl+shift+space", lambda: ui_dispatcher.submit(toggle_annotation))
-    except Exception as e:
-        log.warning("Could not register global hotkey: %s", e)
+        shortcut.register()
+    except Exception as exc:
+        log.warning("Could not register global shortcut: %s", exc)
+        notch.set_status(f"Shortcut unavailable: {exc}. Use the capture button or Settings.")
+    app.aboutToQuit.connect(shortcut.close)
+    cancel_shortcut = HoldShortcut(
+        "esc", lambda: ui_dispatcher.submit(coordinator.cancel), lambda: None, allow_reserved=True,
+    )
+    try:
+        cancel_shortcut.register()
+    except Exception as exc:
+        log.warning("Could not register cancellation shortcut: %s", exc)
+    app.aboutToQuit.connect(cancel_shortcut.close)
 
-    # -- Poll server status every 5s --
-    def poll_server():
+    def configure_capture():
+        dialog = CaptureSettingsDialog(get_capture_shortcut(), get_speech_language(), parent=notch)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        key, language = dialog.values()
+        old_key = get_capture_shortcut()
         try:
-            import json as _json
-            import urllib.request
-            url = f"{server.base_url}/status"
-            resp = urllib.request.urlopen(url, timeout=2)
-            _json.loads(resp.read().decode())
-        except Exception:
-            pass
+            shortcut.rebind(key)
+            try:
+                set_capture_preferences(key, language)
+            except Exception:
+                shortcut.rebind(old_key)
+                raise
+        except Exception as exc:
+            QMessageBox.warning(notch, "Capture settings", str(exc))
+            return
+        voice.language = language
+        notch.setToolTip(f"Hold {key} to draw and speak; release to capture. Enter finishes, Esc cancels.")
+        notch.set_status(f"Hold {key} to draw and speak. Release to capture.")
 
-    poll_timer = QTimer()
-    poll_timer.timeout.connect(poll_server)
-    poll_timer.start(5000)
-    poll_server()
+    notch.on_settings_requested = configure_capture
+    notch.setToolTip(f"Hold {get_capture_shortcut()} to draw and speak; release to capture.")
 
     # -- Graceful shutdown on SIGINT --
     signal.signal(signal.SIGINT, signal.SIG_DFL)

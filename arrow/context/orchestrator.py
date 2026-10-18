@@ -125,6 +125,7 @@ class ContextOrchestrator:
         screen_info: Optional[ScreenInfo] = None,
         mapper: Optional[CoordinateMapper] = None,
         overlay: Any = None,
+        resolved_anchors: Optional[Tuple[Optional[AnchorResolution], Optional[AnchorResolution]]] = None,
     ) -> PipelineResult:
         """Execute the capture pipeline for a session.
 
@@ -149,14 +150,13 @@ class ContextOrchestrator:
             annotations = self._freeze_annotations(session, rect)
 
             # 2. Resolve source + destination anchors.
-            source_ann = next((a for a in annotations if a.role == "source"), None)
-            dest_ann = next((a for a in annotations if a.role == "destination"), None)
-
-            source = self._resolve_anchor("source", source_ann) if source_ann else None
-            destination = self._resolve_anchor("destination", dest_ann) if dest_ann else None
+            if resolved_anchors is None:
+                source, destination = self.resolve_annotations(annotations)
+            else:
+                source, destination = resolved_anchors
 
             # 3. Repository context (dev-server URL inferred from the page).
-            page_url = (source.context or {}).get("pageUrl")
+            page_url = (source.context or {}).get("pageUrl") if source else None
             repo = collect_repository_context(self.project_dir, page_url=page_url)
 
             # 4. Render annotated screenshot + crops (off-screen, pure PIL).
@@ -270,8 +270,17 @@ class ContextOrchestrator:
     # Annotation freezing
     # ------------------------------------------------------------------
 
+    def resolve_annotations(self, annotations: list[Annotation]):
+        """Freeze live element evidence at release, independently of speech I/O."""
+        source_ann = next((a for a in annotations if a.role == "source"), None)
+        dest_ann = next((a for a in annotations if a.role == "destination"), None)
+        return (
+            self._resolve_anchor("source", source_ann) if source_ann else None,
+            self._resolve_anchor("destination", dest_ann) if dest_ann else None,
+        )
+
     def _freeze_annotations(self, session: CaptureSession, rect: dict) -> list[Annotation]:
-        if session.annotations:
+        if session.annotation_scene_frozen or session.annotations:
             return session.annotations
 
         source_ann = Annotation(

@@ -69,6 +69,7 @@ class CaptureSession(BaseModel):
     mode: str = "desktop"
     project_id: Optional[str] = None
     annotations: List[Annotation] = Field(default_factory=list)
+    annotation_scene_frozen: bool = False
     source_anchor: Optional[Dict[str, Any]] = None
     destination_anchor: Optional[Dict[str, Any]] = None
     raw_instruction: str = ""

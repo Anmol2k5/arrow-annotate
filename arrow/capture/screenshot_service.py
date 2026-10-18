@@ -197,7 +197,13 @@ class ScreenshotService:
 
             elif ann.type == "freehand":
                 points = geom.get("points", [])
-                if len(points) >= 2:
+                if len(points) == 1:
+                    point = points[0]
+                    screen, px, py = mapper.virtual_to_physical(point.get("x", 0.0), point.get("y", 0.0))
+                    radius = max(3, round(4 * screen.scale))
+                    draw_static.ellipse((px - radius, py - radius, px + radius, py + radius),
+                                        fill=role_color + (255,))
+                elif len(points) >= 2:
                     screen = mapper.find_screen(points[0].get("x", 0.0), points[0].get("y", 0.0))
                     phys_points = []
                     for pt in points:
