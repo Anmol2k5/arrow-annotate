@@ -4,15 +4,15 @@ Local-first spatial-context tool for coding agents.
 
 ## Install on Windows
 
-The installer bundles Python and the app's dependencies. Windows 10/11 x64 users
+The installer bundles Python and the app's dependencies. Windows 10 (1809+) / Windows 11 x64 users
 can run `Arrow-Annotate-Setup-<version>-x64.exe`, install for their own account,
 and launch **Arrow Annotate** from Start. Hold **Ctrl+Space** to draw and speak;
 release to capture. The system tray provides settings, a quick guide, and Quit.
 
 Installer builds and a portable ZIP are produced by the
 [Windows installer workflow](https://github.com/Anmol2k5/arrow-annotate/actions/workflows/windows-installer.yml).
-Open a successful run and download its Windows artifact; extract it before
-running Setup. A native Windows build must pass before an installer is ready to
+Open a successful run and download its Windows artifact. Extract it and run
+`dist/artifacts/Arrow-Annotate-Setup-<version>-x64.exe`. A native Windows build must pass before an installer is ready to
 share. Settings and captures remain in `%USERPROFILE%\.arrow` after upgrades
 or uninstall. Codex/Claude CLI installation and sign-in are optional separate steps.
 

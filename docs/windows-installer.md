@@ -1,10 +1,10 @@
 # Windows installer
 
-Arrow Annotate packages Python and its native dependencies. Recipients need Windows 10/11 x64; they do not need Python, pip, or a compiler.
+Arrow Annotate packages Python and its native dependencies. Recipients need Windows 10 (1809+) or Windows 11 x64; they do not need Python, pip, or a compiler.
 
 ## Install and use
 
-Download `Arrow-Annotate-Setup-<version>-x64.exe` from a successful **Windows installer** GitHub Actions run's artifact. Extract the downloaded artifact zip, then run Setup. It installs for the current user in `%LOCALAPPDATA%\Programs\ArrowAnnotate` without administrator access, adds a Start menu shortcut, and offers an optional desktop shortcut. Launch **Arrow Annotate** from Start. Close the app from its tray menu before installing an update.
+Download `Arrow-Annotate-Setup-<version>-x64.exe` from a successful **Windows installer** GitHub Actions run's artifact. Extract the downloaded artifact zip, then run `dist/artifacts/Arrow-Annotate-Setup-<version>-x64.exe`. You can share that installer file with other users; they do not need the source checkout or build tools. It installs for the current user in `%LOCALAPPDATA%\Programs\ArrowAnnotate` without administrator access, adds a Start menu shortcut, and offers an optional desktop shortcut. Launch **Arrow Annotate** from Start. Close the app from its tray menu before installing an update.
 
 The alternative `Arrow-Annotate-Portable-<version>-x64.zip` contains the same application. Extract its entire `ArrowAnnotate` folder and launch `ArrowAnnotate.exe`. Keep `_internal` next to both executables. Portable means the application folder can move; user settings and captures still use the normal user data directory. Do not run the executables from inside the zip.
 
