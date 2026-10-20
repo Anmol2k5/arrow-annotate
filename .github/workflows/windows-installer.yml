@@ -29,8 +29,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           architecture: x64
@@ -45,18 +45,34 @@ jobs:
           "INNO_COMPILER=$Compiler" >> $env:GITHUB_ENV
       - name: Test and build Windows executables, installer and portable zip
         shell: pwsh
-        run: ./scripts/build-windows.ps1 -InnoCompiler $env:INNO_COMPILER
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item build/windows -ItemType Directory -Force | Out-Null
+          try {
+            & ./scripts/build-windows.ps1 -InnoCompiler $env:INNO_COMPILER *>&1 |
+              Tee-Object -FilePath build/windows/ci-build.log
+          } catch {
+            $Diagnostic = $_.Exception.Message
+            if (Test-Path build/windows/ci-build.log) {
+              $Diagnostic += "`n" + ((Get-Content build/windows/ci-build.log -Tail 40) -join "`n")
+            }
+            $Escaped = $Diagnostic.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows build failed::$Escaped"
+            throw
+          }
       - name: Exercise frozen and installed apps, then uninstall
         shell: pwsh
         run: ./scripts/test-windows-install.ps1
       - name: Preserve installers, hashes, provenance and smoke reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Arrow-Annotate-Windows-x64-${{ github.run_number }}
           path: |
             dist/artifacts/
             dist/smoke-reports/
+            build/windows/ci-build.log
+            build/windows/source-tests.xml
             build/windows/pyinstaller/windows/warn-windows.txt
           if-no-files-found: warn
           retention-days: 30

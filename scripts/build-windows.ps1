@@ -30,10 +30,32 @@ Invoke-Checked $BuildPython @("-m", "pip", "install", "--disable-pip-version-che
 $PreviousArrowHome = $env:ARROW_HOME
 $PreviousArrowDbPath = $env:ARROW_DB_PATH
 $TestHome = Join-Path ([System.IO.Path]::GetTempPath()) ("ArrowAnnotate-source-tests-" + [guid]::NewGuid().ToString("N"))
+$JUnitReport = Join-Path $Root "build/windows/source-tests.xml"
+if (Test-Path $JUnitReport) { Remove-Item $JUnitReport -Force }
 try {
     $env:ARROW_HOME = $TestHome
     Remove-Item Env:ARROW_DB_PATH -ErrorAction SilentlyContinue
-    Invoke-Checked $BuildPython @("-m", "pytest", "-q")
+    try {
+        Invoke-Checked $BuildPython @("-m", "pytest", "-q", "--junitxml", $JUnitReport)
+    } catch {
+        $TestFailure = $_
+        if (Test-Path $JUnitReport) {
+            try {
+                [xml]$TestResults = Get-Content $JUnitReport -Raw
+                foreach ($TestCase in $TestResults.SelectNodes("//testcase[failure or error]")) {
+                    $Failure = $TestCase.SelectSingleNode("failure | error")
+                    $Stack = $Failure.InnerText
+                    if ($Stack.Length -gt 3000) { $Stack = $Stack.Substring($Stack.Length - 3000) }
+                    $Diagnostic = "$($TestCase.GetAttribute('classname')).$($TestCase.GetAttribute('name'))`n$($Failure.GetAttribute('message'))`n$Stack"
+                    $Escaped = $Diagnostic.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                    Write-Host "::error title=Source test failed::$Escaped"
+                }
+            } catch {
+                Write-Warning "Could not annotate the pytest XML report: $($_.Exception.Message)"
+            }
+        }
+        throw $TestFailure
+    }
 } finally {
     $env:ARROW_HOME = $PreviousArrowHome
     $env:ARROW_DB_PATH = $PreviousArrowDbPath
