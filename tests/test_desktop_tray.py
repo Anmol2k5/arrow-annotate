@@ -1,6 +1,7 @@
 """Desktop controls remain usable without a Python console."""
 
 import importlib
+from pathlib import Path
 
 import pytest
 from PyQt6.QtCore import QThread
@@ -111,7 +112,7 @@ def test_folder_actions_open_local_urls(installed_tray, monkeypatch):
     action(tray, "Open data folder").trigger()
     action(tray, "Browser extension folder").trigger()
     assert all(url.isLocalFile() for url in opened)
-    assert [url.toLocalFile() for url in opened] == [str(data), str(resources / "browser_extension")]
+    assert [Path(url.toLocalFile()) for url in opened] == [data, resources / "browser_extension"]
     assert data.is_dir()
 
 

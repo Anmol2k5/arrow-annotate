@@ -181,3 +181,21 @@ def test_stdin_write_error_cannot_be_reported_as_success(tmp_path):
     assert final.type == 'error'
     assert 'stdin' in final.message.lower()
     assert provider.get_status() == ProviderStatus.FAILED
+
+
+def test_python_child_streams_preserve_unicode_under_legacy_parent_locale(tmp_path, monkeypatch):
+    monkeypatch.setenv('PYTHONIOENCODING', 'cp1252')
+    monkeypatch.setenv('PYTHONUTF8', '0')
+    prompt = 'café — हिंदी में बदलो'
+    provider = LocalClaude("import sys, json; print(json.loads(sys.stdin.read())['message']['content'][0]['text'])")
+    provider.start_run(request_for(tmp_path, prompt=prompt))
+    events = list(provider.stream_events())
+    assert events[-1].type == 'done'
+    assert any(event.type == 'log' and event.message == prompt for event in events)
+
+
+def test_non_utf8_diagnostic_output_does_not_abort_successful_run(tmp_path):
+    provider = LocalClaude("import sys; sys.stdin.read(); sys.stdout.buffer.write(b'caf\\xe9\\n')")
+    final = run_provider_sync(provider, request_for(tmp_path))
+    assert final.type == 'done'
+    assert provider.get_status() == ProviderStatus.COMPLETED

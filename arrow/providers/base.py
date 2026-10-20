@@ -236,6 +236,10 @@ class BaseCLIProvider(Provider):
                     stderr=subprocess.STDOUT,
                     text=True,
                     encoding="utf-8",
+                    errors="replace",
+                    # Python-backed integrations must agree with our UTF-8
+                    # stream protocol even on Windows legacy code pages.
+                    env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                     bufsize=1,
                 )
             except Exception:
