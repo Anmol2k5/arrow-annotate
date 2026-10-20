@@ -1,0 +1,62 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, work]
+    tags: ["v*"]
+    paths:
+      - "arrow/**"
+      - "main.py"
+      - "browser_extension/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "packaging/**"
+      - "scripts/**"
+      - ".github/workflows/windows-installer.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            packaging/requirements-build.txt
+      - name: Install verified Inno Setup 6.4.3
+        shell: pwsh
+        run: |
+          $Compiler = & ./scripts/install-inno.ps1
+          "INNO_COMPILER=$Compiler" >> $env:GITHUB_ENV
+      - name: Test and build Windows executables, installer and portable zip
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -InnoCompiler $env:INNO_COMPILER
+      - name: Exercise frozen and installed apps, then uninstall
+        shell: pwsh
+        run: ./scripts/test-windows-install.ps1
+      - name: Preserve installers, hashes, provenance and smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Arrow-Annotate-Windows-x64-${{ github.run_number }}
+          path: |
+            dist/artifacts/
+            dist/smoke-reports/
+            build/windows/pyinstaller/windows/warn-windows.txt
+          if-no-files-found: warn
+          retention-days: 30

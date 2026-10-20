@@ -2,11 +2,12 @@ import json
 import os
 from typing import Optional
 
+from arrow.core.paths import data_dir
 from arrow.storage.database import get_db_connection, init_db
 from arrow.storage.repository import Repository
 from arrow.storage.schemas import CaptureRecord
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = str(data_dir())
 CAPTURES_DIR = os.path.join(ROOT_DIR, "captures")
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 

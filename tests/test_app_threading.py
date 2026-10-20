@@ -100,6 +100,7 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
     monkeypatch.setattr(application, 'AgentServer', lambda **k: SimpleNamespace(
         start=lambda: None, stop=lambda: None, ws_bridge=None, base_url='http://127.0.0.1:1'))
     monkeypatch.setattr(application, 'DynamicNotch', lambda **k: notch)
+    monkeypatch.setattr(application, 'install_tray', lambda *a: None)
     monkeypatch.setattr(application, 'SelectionOverlay', lambda: overlay)
     monkeypatch.setattr(application, 'VoiceInput', lambda **k: voice)
     monkeypatch.setattr(application, 'SessionManager', lambda: manager)

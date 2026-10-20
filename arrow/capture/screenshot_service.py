@@ -8,8 +8,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
 from arrow.capture.session import Annotation
+from arrow.core.paths import data_dir
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = str(data_dir())
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 
 # Claude vision pricing: ~width*height/750 tokens. At 1568px long edge a

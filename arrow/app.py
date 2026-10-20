@@ -26,6 +26,7 @@ from arrow.storage.settings import (
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
 from arrow.ui.settings_dialog import CaptureSettingsDialog
+from arrow.ui.tray import install_tray
 from arrow.ui.voice_input import VoiceInput
 
 log = logging.getLogger("arrow.app")
@@ -78,7 +79,7 @@ def _get_foreground_title():
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Bluely Agent")
+    app.setApplicationName("Arrow Annotate")
     ui_dispatcher = MainThreadDispatcher()
 
     # -- Start Flask server in background daemon thread --
@@ -322,6 +323,13 @@ def main():
     # -- Graceful shutdown on SIGINT --
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
+    # Retain the tray for the lifetime of the Qt event loop.
+    tray = install_tray(app, notch, configure_capture, begin_capture)
+    if tray is not None:
+        app.setQuitOnLastWindowClosed(False)
+        app.aboutToQuit.connect(tray.hide)
+    if getattr(sys, 'frozen', False):
+        notch.set_status(f"Hold {get_capture_shortcut()} to draw and speak. Release to capture. Settings and Quit are in the system tray.")
     sys.exit(app.exec())
 
 

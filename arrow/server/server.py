@@ -21,6 +21,7 @@ from werkzeug.serving import make_server
 from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
+from arrow.core.paths import data_dir
 from arrow.server.security import (
     LOCALHOST_HOSTS,
     MAX_REQUEST_BYTES,
@@ -33,7 +34,7 @@ from arrow.server.security import (
 
 log = logging.getLogger("arrow.server")
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = str(data_dir())
 SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 
 
