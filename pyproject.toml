@@ -35,15 +35,6 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-module = [
-    "arrow.ui.*",
-    "arrow.server.*",
-    "arrow.context.*",
-    "arrow.providers.*",
-]
-ignore_errors = true
-
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

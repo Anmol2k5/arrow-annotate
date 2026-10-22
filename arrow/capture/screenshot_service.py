@@ -1,5 +1,4 @@
 import math
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -8,9 +7,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
 from arrow.capture.session import Annotation
+from arrow.core.config import resolve_screenshots_dir
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
+# Shared with the HTTP screenshot routes and the capture store (all resolve
+# ARROW_HOME), so a capture is never written where the server will not serve it.
+SCREENSHOTS_DIR = resolve_screenshots_dir()
 
 # Claude vision pricing: ~width*height/750 tokens. At 1568px long edge a
 # Retina frame costs ~2100 tokens instead of the 232K a raw capture costs.
@@ -77,7 +78,7 @@ class ScreenshotService:
         if long <= max_edge:
             return img
         ratio = max_edge / long
-        return img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        return img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
 
     def capture_headless(self, region: Optional[Dict[str, int]] = None) -> Image.Image:
         """Capture the screen without touching any overlay widget.

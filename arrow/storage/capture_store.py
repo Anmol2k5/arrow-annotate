@@ -2,12 +2,23 @@ import json
 import os
 from typing import Optional
 
+from arrow.core.config import resolve_captures_dir, resolve_screenshots_dir
 from arrow.storage.database import get_db_connection, init_db
 from arrow.storage.schemas import CaptureRecord
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CAPTURES_DIR = os.path.join(ROOT_DIR, "captures")
-SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
+# Asset roots come from ARROW_HOME so capture, HTTP serving and the store agree.
+CAPTURES_DIR = resolve_captures_dir()
+SCREENSHOTS_DIR = resolve_screenshots_dir()
+
+
+def captures_dir() -> str:
+    """Current capture working directory (re-reads ARROW_HOME)."""
+    return resolve_captures_dir()
+
+
+def screenshots_dir() -> str:
+    """Current screenshot asset directory (re-reads ARROW_HOME)."""
+    return resolve_screenshots_dir()
 
 
 class CaptureStore:
@@ -37,11 +48,19 @@ class CaptureStore:
                 None
             ))
 
-            # Store asset (screenshot_path)
+            # Store asset rows: the annotated screenshot (queried as
+            # type='screenshot') plus every other file the pipeline produced.
             conn.execute('DELETE FROM assets WHERE capture_id = ?', (record.id,))
+            stored_paths = set()
             if record.screenshot_path:
                 conn.execute('INSERT INTO assets (capture_id, path, type) VALUES (?, ?, ?)',
                              (record.id, record.screenshot_path, 'screenshot'))
+                stored_paths.add(record.screenshot_path)
+            for asset_type, path in (record.assets or {}).items():
+                if path and path not in stored_paths:
+                    conn.execute('INSERT INTO assets (capture_id, path, type) VALUES (?, ?, ?)',
+                                 (record.id, path, asset_type))
+                    stored_paths.add(path)
 
             # Store context
             conn.execute('DELETE FROM contexts WHERE capture_id = ?', (record.id,))
@@ -55,6 +74,7 @@ class CaptureStore:
                 "accessibility": record.accessibility,
                 "selected_text": record.selected_text,
                 "bounding_box": record.bounding_box,
+                "target": record.target,
                 "agentation_status": record.agentation_status,
                 "window_title": record.window_title,
                 "change_request": json.dumps(record.change_request) if record.change_request else None,
@@ -75,9 +95,10 @@ class CaptureStore:
                 ORDER BY s.created_at DESC
             ''').fetchall()
 
+            assets_by_capture = self._assets_by_capture(conn)
             for row in rows:
                 cdata = json.loads(row['context_data']) if row['context_data'] else {}
-                records.append(self._record_from_row(row, cdata))
+                records.append(self._record_from_row(row, cdata, assets_by_capture.get(row['capture_id'], {})))
         return records
 
     def get(self, capture_id: str) -> Optional[CaptureRecord]:
@@ -90,26 +111,40 @@ class CaptureStore:
                 LEFT JOIN contexts c ON s.capture_id = c.capture_id
                 WHERE s.capture_id = ?
             ''', (capture_id,)).fetchone()
-            
+
             if not row:
                 return None
-                
+
             cdata = json.loads(row['context_data']) if row['context_data'] else {}
-            return self._record_from_row(row, cdata)
+            assets = self._assets_by_capture(conn).get(capture_id, {})
+            return self._record_from_row(row, cdata, assets)
+
+    @staticmethod
+    def _assets_by_capture(conn) -> dict:
+        """{capture_id: {type: path}} for every tracked asset row."""
+        out: dict = {}
+        for row in conn.execute("SELECT capture_id, type, path FROM assets").fetchall():
+            out.setdefault(row['capture_id'], {})[row['type']] = row['path']
+        return out
 
     def update(self, record: CaptureRecord) -> None:
         self.add(record)
 
     def delete(self, capture_id: str) -> None:
         with get_db_connection(self._db_path) as conn:
-            # Get asset path to delete file from disk
-            asset_row = conn.execute("SELECT path FROM assets WHERE capture_id = ? AND type = 'screenshot'", (capture_id,)).fetchone()
-            if asset_row and asset_row['path'] and os.path.exists(asset_row['path']):
-                try:
-                    os.remove(asset_row['path'])
-                except OSError:
-                    pass
-            
+            # Remove every asset file on disk (raw, annotated, crops, agent
+            # copies), not just the annotated screenshot.
+            asset_rows = conn.execute(
+                "SELECT DISTINCT path FROM assets WHERE capture_id = ?", (capture_id,)
+            ).fetchall()
+            for row in asset_rows:
+                path = row['path']
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
             # Deleting session triggers CASCADE DELETE on assets, contexts, annotations
             conn.execute('DELETE FROM sessions WHERE capture_id = ?', (capture_id,))
             conn.commit()
@@ -141,7 +176,7 @@ class CaptureStore:
             conn.commit()
 
     @staticmethod
-    def _record_from_row(row, cdata: dict) -> CaptureRecord:
+    def _record_from_row(row, cdata: dict, assets: Optional[dict] = None) -> CaptureRecord:
         change_request = cdata.get('change_request')
         if isinstance(change_request, str):
             try:
@@ -153,6 +188,7 @@ class CaptureStore:
             timestamp=row['created_at'],
             annotation_text=row['voice_transcript'],
             screenshot_path=row['screenshot_path'],
+            assets=assets or {},
             cursor_x=cdata.get('cursor_x', 0),
             cursor_y=cdata.get('cursor_y', 0),
             element_selector=cdata.get('element_selector') or "",
@@ -162,6 +198,7 @@ class CaptureStore:
             accessibility=cdata.get('accessibility') or "",
             selected_text=cdata.get('selected_text') or "",
             bounding_box=cdata.get('bounding_box'),
+            target=cdata.get('target'),
             agentation_status=cdata.get('agentation_status') or "",
             window_title=cdata.get('window_title') or "",
             change_request=change_request,

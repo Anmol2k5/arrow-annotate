@@ -4,48 +4,94 @@
   <meta charset="utf-8" />
   <style>
     body {
-      width: 260px;
-      font-family: system-ui, sans-serif;
+      width: 280px;
+      font-family: "Segoe UI", system-ui, sans-serif;
       font-size: 13px;
-      padding: 12px;
-      color: #0f172a;
+      padding: 14px;
+      color: #1e293b;
+      background: #f8fafc;
     }
-    h3 { margin: 0 0 8px; font-size: 14px; }
-    label { display: block; margin: 8px 0 4px; font-weight: 600; }
-    input[type="password"] {
+    h3 { margin: 0 0 2px; font-size: 14px; color: #0f172a; }
+    .sub { font-size: 11px; color: #64748b; margin-bottom: 10px; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; font-size: 12px; }
+    input[type="password"],
+    input[type="text"] {
       width: 100%;
       box-sizing: border-box;
-      padding: 6px;
+      padding: 7px;
       border: 1px solid #cbd5e1;
-      border-radius: 4px;
+      border-radius: 6px;
       font-size: 12px;
     }
+    input:focus { outline: 2px solid #6B8CFF; outline-offset: 1px; border-color: transparent; }
     .row { display: flex; gap: 8px; margin-top: 8px; }
     button {
       flex: 1;
-      padding: 6px;
+      padding: 7px;
       border: 1px solid #cbd5e1;
-      border-radius: 4px;
-      background: #f8fafc;
+      border-radius: 6px;
+      background: #ffffff;
       cursor: pointer;
+      font-size: 12px;
     }
     button:hover { background: #e2e8f0; }
-    #status { margin-top: 8px; font-size: 12px; color: #334155; min-height: 1em; }
-    .hint { margin-top: 10px; font-size: 11px; color: #64748b; }
-    code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+    button:focus-visible { outline: 2px solid #6B8CFF; outline-offset: 1px; }
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      min-height: 1.2em;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: #eef2ff;
+      color: #3730a3;
+    }
+    #status.ok { background: #dcfce7; color: #166534; }
+    #status.warn { background: #fef3c7; color: #92400e; }
+    #status.err { background: #fee2e2; color: #991b1b; }
+    .hint { margin-top: 10px; font-size: 11px; color: #64748b; line-height: 1.5; }
+    code { background: #e2e8f0; padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    .conn { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #94a3b8; }
+    .conn.on { background: #22c55e; }
+    .conn.busy { background: #3b82f6; }
+    .conn.bad { background: #ef4444; }
   </style>
 </head>
 <body>
-  <h3>Bluely Web Bridge</h3>
-  <label for="token">Bearer token</label>
+  <h3>Arrow Annotate Bridge</h3>
+  <div class="sub">Connects your browser to the Arrow Annotate desktop app.</div>
+
+  <div id="status"><span class="conn" id="connDot"></span><span id="statusText">Checking…</span></div>
+
+  <label for="token">Local bearer token</label>
   <input type="password" id="token" placeholder="Paste token…" autocomplete="off" />
+  <label for="wsurl">Bridge URL</label>
+  <input type="text" id="wsurl" placeholder="ws://127.0.0.1:5002" autocomplete="off" />
   <div class="row">
-    <button id="save">Save</button>
+    <button id="save">Save &amp; connect</button>
     <button id="load">Load from file…</button>
   </div>
-  <div id="status"></div>
+  <div class="row">
+    <button id="retry">Reconnect now</button>
+  </div>
+  <div class="row">
+    <button id="allow">Allow access to this site</button>
+  </div>
+
+  <div class="hint">
+    Find the token in <code>~/.arrow/token</code> (or <code>%ARROW_HOME%\token</code>)
+    on the machine running Arrow Annotate. The token never leaves your browser
+    storage and is only sent to <code>127.0.0.1</code>.
+    <br /><br />
+    Leave the bridge URL at its default unless you changed
+    <code>ARROW_WS_PORT</code> in the desktop app's <code>.env</code>;
+    only loopback <code>ws://</code> addresses are accepted.
+    <br /><br />
+    This extension has no standing access to web pages. It reads page structure
+    only when the desktop app asks it to, and only on sites you explicitly allow
+    with the button above.
+  </div>
+
   <input type="file" id="file" hidden />
-  <p class="hint">Token file: <code>~/.arrow/token</code><br />(or <code>$ARROW_HOME/token</code>)</p>
   <script src="popup.js"></script>
 </body>
 </html>

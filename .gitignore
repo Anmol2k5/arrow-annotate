@@ -12,9 +12,23 @@ graphify-out/
 # venv
 .venv/
 
+# PyInstaller build output
+build/
+dist/
+*.spec.bak
+
 # Runtime logs / crash dumps
 crash.log
 *.log
 
-# Environment
+# Environment / secrets — never commit real credentials
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets.json
+token
+**/token
+arrow.db

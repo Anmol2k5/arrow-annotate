@@ -9,6 +9,10 @@ class CaptureRecord(BaseModel):
     id: str
     timestamp: str
     screenshot_path: str
+    # Every file the pipeline wrote for this capture (raw, crops, agent
+    # copies...). Deletion must remove all of them, not just the annotated
+    # screenshot — otherwise files accumulate in screenshots/ forever.
+    assets: Dict[str, str] = Field(default_factory=dict)
     annotation_text: str = ""
     cursor_x: int = 0
     cursor_y: int = 0
@@ -19,6 +23,9 @@ class CaptureRecord(BaseModel):
     accessibility: str = ""
     selected_text: str = ""
     bounding_box: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Point Mode provenance: how the target was resolved, its confidence and
+    # the evidence behind it. Absent for freehand captures.
+    target: Optional[Dict[str, Any]] = None
     agentation_status: str = ""
     window_title: str = ""
     change_request: Optional[Dict[str, Any]] = None

@@ -1,31 +1,220 @@
-# Current Architecture
+# Arrow Annotate — Current Architecture
 
-## Application Startup Flow
-The application starts in `main.py`. A PyQt6 `QApplication` is initialized.
-It spawns a background daemon thread running a Flask server (`AgentServer` in `server.py`).
-It then instantiates several PyQt widgets/objects:
-- `DynamicNotch` (notch UI)
-- `SelectionOverlay` (the transparent drawing overlay)
-- `VoiceInput` (speech recognition thread)
-- `CaptureStore` (JSON-based local storage)
+_Last verified against the source tree on 2026-10-10. This document describes the
+implementation as it exists, not an aspirational design._
 
-A global hotkey (`ctrl+shift+space`) or the notch triggers `toggle_annotation()`.
+## 1. Technology stack
 
-## Event Loop & Threading
-- The Qt Event Loop runs on the main thread.
-- Flask server runs in a daemon thread.
-- WebSocket bridge (for browser extension) runs its own asyncio loop in a thread.
-- Screenshots and network uploads (`_capture_task` and `_send_to_agentation`) are offloaded to ad-hoc `threading.Thread` instances.
+| Layer | Technology |
+| --- | --- |
+| Language / runtime | Python 3.10+ (developed and tested on 3.12) |
+| Desktop UI | PyQt6 (frameless floating notch + full-screen annotation overlay) |
+| Local HTTP API | Flask (threaded) on `127.0.0.1:5001` by default |
+| Local WebSocket bridge | `websockets` (asyncio loop in a daemon thread) on `127.0.0.1:5002` |
+| Browser integration | Chrome Manifest V3 extension (`browser_extension/`) |
+| Screen capture | `mss` + Pillow |
+| Element resolution | Browser DOM (via extension), Windows UI Automation (`uiautomation`), OCR (RapidOCR) fallback |
+| Voice input | `SpeechRecognition` + PyAudio (Google Web Speech by default — network) |
+| Persistence | SQLite (`arrow.db`) via a small hand-rolled repository layer |
+| Structured data | Pydantic models |
+| Providers | Codex CLI, Claude Code CLI, Agentation HTTP service |
+| MCP | In-process MCP server (`arrow/mcp/`) |
 
-## Current Capture Flow
-User hotkey → `SelectionOverlay` shown → User draws → `mouseRelease` triggers bounding box calculation → `selection_complete` signal emitted → `main.py` receives signal, grabs primary monitor via `mss`, crops it, reads current voice transcript → Saves to `CaptureRecord` → Refreshes notch → Spawns thread to upload to Agentation MCP via HTTP.
+## 2. Entry points
 
-## Identified Failure Points & Context Loss
-- **Annotation marks in screenshots**: `SelectionOverlay` points fade out after 2 seconds. They are NOT baked into the saved screenshots.
-- **Strokes**: New strokes replace previous ones because `SelectionOverlay._points` handles a single continuous line.
-- **Source and Destination**: Not represented separately; the overlay only emits a single bounding box (`rect`).
-- **Browser Context**: Not integrated into the primary capture flow; it exists in `server.py` but isn't called during normal captures in `main.py`.
-- **Empty Context Fields**: `CaptureRecord` fields like `element_selector` and `computed_styles` are mostly empty because the resolver isn't actively used in the main screenshot pipeline.
-- **Voice Results**: Race conditions exist. Voice results update `current_voice_text` and can arrive after the capture logic has already executed or been cancelled.
-- **Agentation**: Selects the first available session indiscriminately (`sessions[0]["id"]`).
-- **Timestamp Collisions**: Capture IDs use `strftime("%Y%m%d_%H%M%S")`, which can collide.
+- `main.py` — validates the platform (Windows-only guard), puts the repo root on
+  `sys.path`, and calls `arrow.app.main`.
+- `arrow/app.py:main()` — the single composition root: builds `QApplication`,
+  starts `AgentServer`, builds the notch/overlay/voice/session objects, wires
+  signals, registers the global hotkey, starts the status poll timer, and runs
+  the Qt event loop.
+- `arrow/mcp/server.py` — a separate MCP entry surface used by agent clients.
+
+## 3. End-to-end capture flow (as implemented)
+
+```mermaid
+flowchart TD
+    A[User: notch button or Ctrl+Shift+Space] --> B[SessionManager.start_session<br/>IDLE → STARTING → ANNOTATING]
+    B --> C[SelectionOverlay.show_overlay<br/>source + optional destination strokes]
+    B --> D[VoiceInput.start_listening<br/>capture_id scoped]
+    C -->|Ctrl+Shift+Space or Ctrl+Shift+Enter| E[selection_complete signal]
+    C -->|Esc| C2[cancelled signal → session CANCELLED, no screenshot]
+    D -->|transcript| F[on_voice_result stores text]
+    E --> G[on_selection: transition COLLECTING_CONTEXT<br/>hide overlay, grab cursor + window title]
+    G --> H[ScreenshotService.capture_raw<br/>main thread, overlay hidden]
+    H --> I[Background worker: transition PROCESSING]
+    I --> J[ContextOrchestrator.run]
+    J --> J1[Browser DOM via WS bridge]
+    J --> J2[Windows UI Automation]
+    J --> J3[OCR fallback]
+    J --> J4[Repository context from project dir]
+    J --> J5[Render annotated image + crops]
+    J --> J6[Intent compiler → change request]
+    J --> J7[CaptureStore persists record]
+    J1 & J2 & J3 & J4 & J5 & J6 & J7 --> K{pipeline.error?}
+    K -->|yes| L[transition FAILED<br/>notch error surface]
+    K -->|no| M[transition PREVIEW → READY<br/>notch.refresh_screenshots]
+    M --> N[transition SENDING]
+    N --> O[Agentation handoff thread<br/>share URL → transition RUNNING]
+    O -->|ok| P[transition COMPLETED]
+    O -->|error| Q[transition FAILED → retry available]
+```
+
+### Capture modes
+
+Both modes start the same `CaptureSession` and run the same
+`ContextOrchestrator.run` pipeline. `CaptureMode` only decides which overlay
+gesture produces the selection, so there is no second state machine.
+
+| | `ANNOTATE` (default) | `POINT` |
+|---|---|---|
+| Gesture | freehand source + optional destination stroke | one left click |
+| Selection signal | `selection_complete(rect)` | `point_selected(x, y)` |
+| After the gesture | overlay stays open until finish | **overlay closes; one click is one capture** |
+| Rect | stroke bounding box | resolved element bounds, else fallback crop |
+| Provenance | stroke geometry | `method` + `confidence` + `evidence` |
+| Finish with no gesture | full-screen capture | **cancel** (never a silent full-screen shot) |
+
+`arrow/capture/point_capture.py` owns the Point Mode handoff. The ordering is
+the contract, and it is enforced rather than hoped for:
+
+1. **GUI thread** — `on_point_selected` snapshots every mutable input (capture
+   id, mode, click point, virtual-desktop bounds, cursor, window title,
+   instruction, project dir, timestamp) into a frozen `PointCaptureRequest`,
+   then calls `PointCaptureCoordinator.begin`, which invokes the overlay
+   teardown **synchronously** before dispatching the worker.
+2. **Worker** — resolves the target (UIA → OCR → fallback), grabs the raw
+   screenshot, and runs the pipeline. It never touches a Qt widget: all
+   geometry was snapshotted in step 1.
+3. **Back on the GUI thread** — status and notch refresh are delivered through
+   `UiBridge.post_for`, which re-checks capture liveness at delivery.
+
+Because teardown is synchronous and precedes the spawn, Arrow's own overlay
+cannot appear in captured pixels regardless of scheduling. A capture is dropped
+if its session is no longer active before acquisition, so a superseded or
+cancelled capture is never persisted. A second click while one capture is still
+running is rejected rather than allowed to silently cancel the first.
+
+`arrow/context/point_target.py` resolves a point through the existing
+`NativeContextResolver` (UIA → OCR → unresolved). A resolved target uses the
+element's real bounds, clipped to the virtual desktop. An unresolved one falls
+back to a crop around the click and is recorded as `method="fallback"` with
+`confidence_kind="none"` and zero confidence, so a later consumer cannot read a
+guess as a detected element.
+
+Resolution and capture run on a worker thread; only the screenshot grab runs on
+the Qt main thread, because the overlay must be hidden first. In `POINT` mode
+the overlay stays visible after a click so several elements join one task.
+
+All point rectangles are virtual-desktop coordinates and may be negative when a
+monitor sits left of or above the primary display.
+
+### State machine
+
+`arrow/capture/session.py` owns the single active `CaptureSession` and validates
+every transition in `ALLOWED_TRANSITIONS`. Terminal states (`COMPLETED`,
+`FAILED`, `CANCELLED`) can only return to `IDLE`. Abort transitions to
+`FAILED`/`CANCELLED` are allowed from any non-final active state.
+
+## 4. Local services
+
+```mermaid
+flowchart LR
+    subgraph Desktop app
+      N[DynamicNotch]
+      O[SelectionOverlay]
+      APP[arrow.app main]
+      SRV[AgentServer<br/>Flask thread]
+      WS[WebSocketBridge<br/>asyncio thread]
+      DB[(SQLite arrow.db)]
+      SHOTS[(screenshots/)]
+    end
+
+    subgraph Browser
+      SW[MV3 service worker]
+      CS[content script]
+      POP[popup]
+    end
+
+    subgraph External
+      AG[Agentation :4747]
+      CL[Codex / Claude Code CLI]
+      MCP[MCP client]
+    end
+
+    N --> APP
+    O --> APP
+    APP --> SRV
+    APP --> WS
+    APP --> DB
+    SRV --> SHOTS
+    SW <-->|ws://127.0.0.1:5002 auth handshake| WS
+    SW -->|chrome.tabs.sendMessage| CS
+    POP -->|token in chrome.storage| SW
+    SRV -->|HTTP + bearer token| AG
+    APP --> SHOTS
+    MCP --> APP
+    N -->|spawn CLI| CL
+```
+
+### HTTP surface and guards
+
+Every route below is wrapped by `require_capability` (origin check →
+constant-time bearer-token verification → capability gate). Sensitive
+capabilities are disabled by default and opt in through
+`ARROW_ENABLED_CAPABILITIES`.
+
+| Route | Capability | Notes |
+| --- | --- | --- |
+| `GET /status` | none | intentionally minimal unauthenticated payload; detail behind token |
+| `GET /screenshot` | `read_screenshot` | on-demand primary-screen capture |
+| `GET /screenshots/<path>` | `read_screenshot` **or** valid share token | Agentation uses share tokens |
+| `POST /screenshots/save` | `read_screenshot` | validated, atomically written, collision-resistant name |
+| `POST /resolve`, `POST /inspect`, `POST /highlight/resolve` | `read_capture_context` | DOM/UIA/OCR resolution |
+| `POST /highlight/capture` | `read_screenshot` | region capture with normalized crop |
+| `POST /execute`, `/execute/batch`, `/highlight/execute` | `control_native` (opt-in) | no shell execution is ever exposed |
+
+### WebSocket bridge
+
+The extension must send `{"type":"auth","token":…}` within `auth_timeout`
+seconds; the socket is only registered after verification (close code `4001`
+otherwise). `inspect(x, y)` is request/response with per-message ids and
+timeouts.
+
+## 5. Threading model
+
+| Thread | Work | Rule |
+| --- | --- | --- |
+| Qt main | all widget access, state transitions triggered by UI | single owner of widgets |
+| `AgentServer` | Flask WSGI | never touches widgets; returns HTTP only |
+| `WSBridge` | asyncio loop for the extension socket | never touches widgets |
+| capture worker | `ContextOrchestrator.run` | communicates back through queued Qt signals only |
+| voice worker | microphone + recognition | generation-token cancellation; signals only |
+| provider worker | CLI subprocess | `provider_finished` queued signal to UI |
+
+A `QObject` signal bridge (`UiBridge`) is the only sanctioned way for background
+threads to update the UI. Stale callbacks carry their `capture_id` and are
+discarded when it no longer matches the active session.
+
+## 6. Persistence
+
+- All user data resolves through `arrow.core.config`, so `ARROW_HOME` moves it as
+  a unit. Default `~/.arrow`.
+- `arrow.db` (SQLite) — capture records, change requests. `ARROW_DB_PATH` overrides.
+- `screenshots/` — annotated images and crops, named with collision-resistant ids.
+- `captures/` — generated context files.
+- `ARROW_HOME` also holds `token`, `config.json` (selected project), logs.
+
+`resolve_screenshots_dir()` is the single source of truth shared by the capture
+pipeline, the capture store and the HTTP screenshot routes, so a capture can
+never be written to a directory the server will not serve. On first start,
+`migrate_legacy_home()` moves a pre-`ARROW_HOME` checkout database into
+`ARROW_HOME` exactly once, and skips entirely when a database already exists
+there.
+
+## 7. Shutdown
+
+Normal exit unregisters the global hotkey, stops Qt timers, cancels voice and
+capture workers, stops the WebSocket bridge and Flask server, releases the
+microphone, and closes the database. Daemon threads are a backstop, not the
+primary mechanism.

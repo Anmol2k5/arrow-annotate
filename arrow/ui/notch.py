@@ -3,8 +3,9 @@ import math
 import os
 import random
 import threading
+from typing import Optional
 
-from PyQt6.QtCore import (
+from PyQt6.QtCore import (  # type: ignore[attr-defined]
     QEasingCurve,
     QParallelAnimationGroup,
     QPointF,
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -44,22 +46,24 @@ from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, set_project_dir
+from arrow.storage.task_repository import TaskRepository
+from arrow.ui.task_shelf import TaskShelf
 
 log = logging.getLogger("arrow.ui.notch")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-NOTCH_BG = "rgba(9, 9, 11, 240)"
-NOTCH_BORDER = "rgba(255, 255, 255, 12)"
+NOTCH_BG = "rgba(9, 13, 22, 247)"
+NOTCH_BORDER = "rgba(140, 174, 233, 30)"
 
 IDLE_W, IDLE_H = 80, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
-SCREENSHOTS_W, SCREENSHOTS_H = 760, 440
+SCREENSHOTS_W, SCREENSHOTS_H = 760, 700  # history + task shelf must both fit
 
 TOP_OFFSET = 8
-ANIM_MS = 350
+ANIM_MS = 315  # Gentler expansion and collapse than the previous 245ms snap
 
 ACCENT_COLORS = [
     ("#7DD3FC", "Sky"), ("#34D399", "Emerald"), ("#A78BFA", "Violet"),
@@ -364,15 +368,17 @@ class ScreenshotThumbnail(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setFixedSize(320, 400)
+        self.setFixedWidth(320)
+        self.setMinimumHeight(345)
         self.setStyleSheet("""
             ScreenshotThumbnail {
-                background: #18181b;
-                border: 1px solid rgba(255,255,255,10);
-                border-radius: 12px;
+                background: #141B29;
+                border: 1px solid rgba(130,168,232,30);
+                border-radius: 14px;
             }
             ScreenshotThumbnail:hover {
-                border: 1px solid rgba(255,255,255,30);
+                border: 1px solid rgba(102,166,255,105);
+                background: #182133;
             }
         """)
 
@@ -491,8 +497,8 @@ class ScreenshotThumbnail(QFrame):
         panel = QFrame()
         panel.setStyleSheet("""
             QFrame {
-                background: rgba(255,255,255,6);
-                border: 1px solid rgba(255,255,255,8);
+                background: rgba(102,166,255,12);
+                border: 1px solid rgba(134,174,239,24);
                 border-radius: 10px;
             }
         """)
@@ -533,16 +539,20 @@ class ScreenshotThumbnail(QFrame):
         btn_row.addWidget(copy_btn)
 
         self._provider_buttons = {}
+        btn_row.addStretch()
+        v.addLayout(btn_row)
+
+        # Provider actions have their own row so narrow cards never clip them.
+        providers_row = QHBoxLayout()
+        providers_row.setSpacing(6)
         for name in ("Codex", "Claude Code"):
             btn = self._action_button(f"▶ {name}", lambda _=False, n=name: self._send_to_provider(n))
             btn.setEnabled(self._provider_available(name))
             if not btn.isEnabled():
                 btn.setToolTip(f"{name} CLI not found on PATH")
             self._provider_buttons[name] = btn
-            btn_row.addWidget(btn)
-
-        btn_row.addStretch()
-        v.addLayout(btn_row)
+            providers_row.addWidget(btn)
+        v.addLayout(providers_row)
 
         # Refreshable info section (summary / source→destination / likely file).
         self._info_widget = QWidget()
@@ -733,8 +743,8 @@ class ScreenshotsView(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 16, 24, 16)
-        layout.setSpacing(20)
+        layout.setContentsMargins(20, 16, 20, 18)
+        layout.setSpacing(13)
 
         # --- Top Toolbar ---
         top = QHBoxLayout()
@@ -743,33 +753,94 @@ class ScreenshotsView(QWidget):
         pill_frame = QFrame()
         pill_frame.setStyleSheet("""
             QFrame {
-                background: #18181b;
-                border: 1px solid rgba(255,255,255,10);
-                border-radius: 18px;
+                background: #141D2B;
+                border: 1px solid rgba(137,169,226,34);
+                border-radius: 17px;
             }
         """)
         pill_layout = QHBoxLayout(pill_frame)
         pill_layout.setContentsMargins(8, 4, 8, 4)
         pill_layout.setSpacing(8)
 
-        for icon, tooltip in [("🎙️", "Voice capture"), ("⌨️", "Keyboard capture"), ("🖱️", "Pointer capture")]:
-            btn = QPushButton(icon)
-            btn.setFixedSize(28, 28)
-            btn.setToolTip(tooltip)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background: transparent;
-                    color: white;
-                    font-size: 15px;
-                    border: none;
-                    border-radius: 14px;
-                }
-                QPushButton:hover { background: rgba(255,255,255,10); }
-            """)
-            btn.clicked.connect(self._highlight)
-            pill_layout.addWidget(btn)
+        capture_btn = QPushButton("✦  Capture")
+        capture_btn.setToolTip("Draw an annotation • Ctrl+Shift+Space")
+        capture_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        capture_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        capture_btn.clicked.connect(self._highlight)
+        pill_layout.addWidget(capture_btn)
+
+        point_btn = QPushButton("⊙  Point")
+        point_btn.setToolTip("Click one element to capture it • Ctrl+Shift+Space")
+        point_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        point_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        point_btn.clicked.connect(self._point)
+        pill_layout.addWidget(point_btn)
+
+        task_btn = QPushButton("+ Task")
+        task_btn.setToolTip("Group the next captures under one instruction")
+        task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        task_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        task_btn.clicked.connect(self._new_task)
+        pill_layout.addWidget(task_btn)
+
+        copy_task_btn = QPushButton("Copy task")
+        copy_task_btn.setToolTip("Copy the active task as Markdown for an AI agent")
+        copy_task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_task_btn.setStyleSheet("""
+            QPushButton {
+                color: #DCEBFF;
+                background: transparent;
+                border: none;
+                border-radius: 11px;
+                padding: 4px 9px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(102,166,255,36); }
+        """)
+        copy_task_btn.clicked.connect(self._copy_task)
+        pill_layout.addWidget(copy_task_btn)
 
         top.addWidget(pill_frame)
+        wordmark = QLabel("ARROW   /   ANNOTATE")
+        wordmark.setStyleSheet(
+            "color: #93A8C7; font-size: 10px; font-weight: 700; "
+            "letter-spacing: 1px; background: transparent;"
+        )
+        top.addWidget(wordmark)
         top.addStretch()
 
         self._repo_lbl = QLabel("")
@@ -791,8 +862,9 @@ class ScreenshotsView(QWidget):
         repo_btn.clicked.connect(self._select_repository)
         top.addWidget(repo_btn)
 
-        doc_btn = QPushButton("📄")
+        doc_btn = QPushButton("?")
         doc_btn.setFixedSize(36, 36)
+        doc_btn.setToolTip("How to use Arrow Annotate")
         doc_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -802,45 +874,51 @@ class ScreenshotsView(QWidget):
             }
             QPushButton:hover { color: white; }
         """)
+        doc_btn.clicked.connect(self._show_help)
         top.addWidget(doc_btn)
-        
+
         layout.addLayout(top)
 
         # --- Second Row ---
         row2 = QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
 
-        self._all_btn = QPushButton("All 0")
+        self._all_btn = QLabel("All 0")
         self._all_btn.setFixedHeight(32)
+        self._all_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._all_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: black;
+            QLabel {
+                background: #E9F2FF;
+                color: #10213C;
                 border-radius: 16px;
                 padding: 0 16px;
-                font-size: 13px;
-                font-weight: bold;
+                font-size: 12px;
+                font-weight: 700;
             }
         """)
         row2.addWidget(self._all_btn)
 
-        add_btn = QPushButton("+")
-        add_btn.setFixedSize(32, 32)
+        add_btn = QPushButton("+  New")
+        add_btn.setFixedSize(76, 32)
+        add_btn.setToolTip("New annotation • Ctrl+Shift+Space")
         add_btn.setStyleSheet("""
             QPushButton {
-                background: #18181b;
-                color: white;
-                border-radius: 16px;
-                font-size: 18px;
+                background: #2059B0;
+                color: #FFFFFF;
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: 700;
             }
-            QPushButton:hover { background: #27272a; }
+            QPushButton:hover { background: #3075D5; }
         """)
         add_btn.clicked.connect(self._highlight)
         row2.addWidget(add_btn)
 
         row2.addStretch()
 
-        copy_btn = QPushButton("📄 Copy all")
+        copy_btn = QPushButton("📋 Copy all")
+        copy_btn.setToolTip("Copy all capture instructions")
+        self._copy_btn = copy_btn
         copy_btn.setFixedHeight(32)
         copy_btn.setStyleSheet("""
             QPushButton {
@@ -858,6 +936,7 @@ class ScreenshotsView(QWidget):
 
         trash_btn = QPushButton("🗑️")
         trash_btn.setFixedSize(32, 32)
+        trash_btn.setToolTip("Delete all captures")
         trash_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -873,6 +952,16 @@ class ScreenshotsView(QWidget):
         layout.addLayout(row2)
 
         # --- Cards Area ---
+        self._empty_state = QLabel("No captures yet\nStart by drawing on your screen with Ctrl+Shift+Space")
+        self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_state.setWordWrap(True)
+        self._empty_state.setStyleSheet(
+            "color: #8EA2C0; font-size: 13px; font-weight: 500; "
+            "background: #111927; border: 1px dashed #273C58; "
+            "border-radius: 15px; padding: 28px;"
+        )
+        layout.addWidget(self._empty_state, 1)
+
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setStyleSheet("""
@@ -892,6 +981,21 @@ class ScreenshotsView(QWidget):
         layout.addWidget(self._scroll, 1)
 
         self._refresh_repo_label()
+
+    def _show_help(self):
+        QMessageBox.information(
+            self,
+            "Arrow Annotate — Quick start",
+            "1. Select a project with the folder icon.\n"
+            "2. Press Ctrl+Shift+Space (or click Capture).\n"
+            "3. Draw around a UI element; optionally draw a destination.\n"
+            "4. Press Ctrl+Shift+Space or Ctrl+Shift+Enter to finish.\n"
+            "   Press Esc to cancel without capturing.\n"
+            "5. Review the screenshot, edit/copy the instruction, "
+            "or send it to an installed coding agent.\n\n"
+            "Voice starts with capture when enabled. "
+            "No speech is required for a screenshot.",
+        )
 
     def _select_repository(self):
         """Pick a project folder, persist it, and tell the orchestrator."""
@@ -928,6 +1032,22 @@ class ScreenshotsView(QWidget):
         if hasattr(parent_notch, 'on_highlight_requested'):
             parent_notch.on_highlight_requested()
 
+    def _point(self):
+        """One click is a complete capture (Point Mode)."""
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_point_requested'):
+            parent_notch.on_point_requested()
+
+    def _new_task(self):
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_new_task_requested'):
+            parent_notch.on_new_task_requested()
+
+    def _copy_task(self):
+        parent_notch = self.window()
+        if hasattr(parent_notch, 'on_copy_task_requested'):
+            parent_notch.on_copy_task_requested()
+
     def _copy_all(self):
         try:
             from arrow.storage.capture_store import CaptureStore
@@ -947,17 +1067,11 @@ class ScreenshotsView(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             from arrow.storage.capture_store import CaptureStore
             store = CaptureStore()
-            failed = []
             for rec in store.get_all():
+                # delete() removes every tracked asset file (raw, crops,
+                # agent copies) and the DB rows.
                 store.delete(rec.id)
-                if os.path.exists(rec.screenshot_path):
-                    try:
-                        os.remove(rec.screenshot_path)
-                    except Exception:
-                        failed.append(rec.screenshot_path)
             self._scan_existing()
-            if failed:
-                QMessageBox.warning(self, "Partial Cleanup", f"Removed from library but could not delete {len(failed)} file(s):\n" + "\n".join(failed))
 
     def _scan_existing(self):
         for thumb in self._thumbnails:
@@ -984,6 +1098,13 @@ class ScreenshotsView(QWidget):
 
         self._hbox.addStretch()
         self._all_btn.setText(f"All {len(self._thumbnails)}")
+        self._sync_empty_state()
+
+    def _sync_empty_state(self):
+        has_captures = bool(self._thumbnails)
+        self._empty_state.setVisible(not has_captures)
+        self._scroll.setVisible(has_captures)
+        self._copy_btn.setEnabled(has_captures)
 
     def _add_thumbnail(self, path, text="", timestamp="", window_title="", change_request=None):
         thumb = ScreenshotThumbnail(path, text, timestamp, window_title, change_request)
@@ -997,6 +1118,7 @@ class ScreenshotsView(QWidget):
             self._hbox.addWidget(thumb)
             self._hbox.addStretch()
         self._all_btn.setText(f"All {len(self._thumbnails)}")
+        self._sync_empty_state()
 
     def _remove_thumbnail(self, thumb):
         self._hbox.removeWidget(thumb)
@@ -1004,13 +1126,14 @@ class ScreenshotsView(QWidget):
             self._thumbnails.remove(thumb)
         thumb.deleteLater()
         self._all_btn.setText(f"All {len(self._thumbnails)}")
+        self._sync_empty_state()
 
 
 # ---------------------------------------------------------------------------
 # DynamicNotch  – main overlay widget
 # ---------------------------------------------------------------------------
 class DynamicNotch(QWidget):
-    def __init__(self, server: AgentServer = None):
+    def __init__(self, server: Optional[AgentServer] = None):
         super().__init__()
         self._server = server
         self._state = "idle"
@@ -1021,28 +1144,50 @@ class DynamicNotch(QWidget):
         self._idle_rect = QRect()
         self._expanded_rect = QRect()
         self._is_recording = False
+        self._status_text = ""
 
         self._setup_window()
         self._build_ui()
         self._position_idle()
         self._anim_group = None
-        self._auto_collapse_timer = None
+        self._auto_collapse_timer: Optional[QTimer] = None
+        # Short grace period prevents hover-boundary jitter during resize.
+        self._hover_exit_timer = QTimer(self)
+        self._hover_exit_timer.setSingleShot(True)
+        self._hover_exit_timer.setInterval(110)
+        self._hover_exit_timer.timeout.connect(self._collapse_if_pointer_away)
 
     # -- property for border-radius interpolation --
     def get_anim_progress(self):
         return self._anim_progress
 
     def set_anim_progress(self, v):
-        self._anim_progress = v
-        br = int(16 + (20 - 16) * v)
-        self._border_radius = br
-        self._container.setStyleSheet(f"""
-            #notchContainer {{
-                background: {NOTCH_BG};
-                border: 1px solid {NOTCH_BORDER};
-                border-radius: {br}px;
-            }}
-        """)
+        # Avoid a costly Qt style-sheet re-polish on every animation frame.
+        self._anim_progress = max(0.0, min(1.0, float(v)))
+        br = int(16 + 4 * self._anim_progress)
+        if br != self._border_radius:
+            self._border_radius = br
+            self._container.setStyleSheet(f"""
+                #notchContainer {{
+                    background: {NOTCH_BG};
+                    border: 1px solid {NOTCH_BORDER};
+                    border-radius: {br}px;
+                }}
+            """)
+
+        # Don't show the large card layout in an 80px-wide window. Reveal
+        # it once the expanding shell is wide enough, then fade it in.
+        reveal = self._anim_progress
+        if reveal >= 0.65:
+            if self._expanded_w.isHidden():
+                self._idle_w.hide()
+                self._expanded_w.show()
+            self._expanded_opacity.setOpacity(
+                min(1.0, (reveal - 0.65) / 0.30)
+            )
+        elif not self._expanded_w.isHidden():
+            self._expanded_w.hide()
+            self._idle_w.show()
 
     anim_progress = pyqtProperty(float, get_anim_progress, set_anim_progress)
 
@@ -1071,7 +1216,9 @@ class DynamicNotch(QWidget):
     # ------------------------------------------------------------------
     def _build_ui(self):
         self._main_layout = QVBoxLayout(self)
-        self._main_layout.setContentsMargins(24, 20, 24, 20)
+        # The idle window is only 80×32; large margins made Qt fight the
+        # geometry animation. The screenshots view provides its own padding.
+        self._main_layout.setContentsMargins(4, 4, 4, 4)
         self._main_layout.setSpacing(0)
 
         self._container = QFrame()
@@ -1120,8 +1267,28 @@ class DynamicNotch(QWidget):
         self._screens_view = ScreenshotsView()
         expanded_layout.addWidget(self._screens_view, 1)
 
+        # Task shelf: multi-capture view over the active TaskBundle. Hosted
+        # here, implemented in arrow.ui.task_shelf so it stays testable.
+        self.task_shelf = TaskShelf(TaskRepository())
+        expanded_layout.addWidget(self.task_shelf, 1)
+
+        self._expanded_opacity = QGraphicsOpacityEffect(self._expanded_w)
+        self._expanded_opacity.setOpacity(0.0)
+        self._expanded_w.setGraphicsEffect(self._expanded_opacity)
         self._expanded_w.hide()
         cl.addWidget(self._expanded_w, 1)
+
+        # ---- Status line (set via set_status/update_status) ----
+        self._status_label = QLabel("", self._container)
+        self._status_label.setObjectName("notchStatus")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet(
+            "QLabel#notchStatus { color: #9FB7D6; font-size: 12px; "
+            "padding: 7px 12px; background: #101B2D; border-radius: 9px; }"
+        )
+        self._status_label.hide()
+        cl.addWidget(self._status_label)
 
         self._main_layout.addWidget(self._container)
 
@@ -1143,20 +1310,20 @@ class DynamicNotch(QWidget):
             return QRect(0, 0, self._expanded_size[0], self._expanded_size[1])
         ag = screen.availableGeometry()
         ew, eh = self._expanded_size
+        ew = min(ew, max(260, ag.width() - 16))
+        eh = min(eh, max(230, ag.height() - TOP_OFFSET - 12))
         x = ag.center().x() - ew // 2
-        y = TOP_OFFSET
+        y = max(ag.y() + 4, TOP_OFFSET)
         return QRect(x, y, ew, eh)
 
     # ------------------------------------------------------------------
     # State transitions
     # ------------------------------------------------------------------
     def expand(self, tab="screens"):
+        if self._state == "expanded":
+            return  # Hover re-entry must not restart a running animation.
         self._state = "expanded"
-
-        # Show expanded content immediately so it's visible during animation
-        self._idle_w.hide()
-        self._expanded_w.show()
-
+        self._hover_exit_timer.stop()
         self._expanded_size = (SCREENSHOTS_W, SCREENSHOTS_H)
         self._animate_to(self._calc_expanded_rect(), 1.0)
 
@@ -1165,10 +1332,8 @@ class DynamicNotch(QWidget):
             return
         self._state = "idle"
 
-        # Hide expanded content immediately for clean pill contraction
-        self._expanded_w.hide()
-        self._idle_w.show()
-
+        # Keep the expanded content visible while the shell contracts,
+        # then fade/switch it through set_anim_progress for a clean exit.
         # Recalculate idle rect in case screen geometry changed
         self._position_idle_rect()
         self._animate_to(self._idle_rect, 0.0)
@@ -1192,14 +1357,16 @@ class DynamicNotch(QWidget):
             self._anim_group = None
 
         geo_anim = QPropertyAnimation(self, b"geometry")
+        geo_anim.setStartValue(self.geometry())  # Handles mid-animation reversal.
         geo_anim.setEndValue(target_rect)
         geo_anim.setDuration(ANIM_MS)
-        geo_anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+        geo_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         br_anim = QPropertyAnimation(self, b"anim_progress")
+        br_anim.setStartValue(self._anim_progress)
         br_anim.setEndValue(target_progress)
         br_anim.setDuration(ANIM_MS)
-        br_anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+        br_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         self._anim_group = QParallelAnimationGroup(self)
         self._anim_group.addAnimation(geo_anim)
@@ -1210,17 +1377,21 @@ class DynamicNotch(QWidget):
     # Mouse events  (hover to expand)
     # ------------------------------------------------------------------
     def enterEvent(self, event):
-        # Cancel auto-collapse if we re-enter
+        self._hover_exit_timer.stop()
         if self._auto_collapse_timer is not None:
             self._auto_collapse_timer.stop()
-            self._auto_collapse_timer = None
+        self._auto_collapse_timer = None
         self.expand()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         if not self._docked:
-            self.collapse()
+            self._hover_exit_timer.start()
         super().leaveEvent(event)
+
+    def _collapse_if_pointer_away(self):
+        if not self._docked and not self.underMouse():
+            self.collapse()
 
     # ------------------------------------------------------------------
     # Dock / Undock
@@ -1247,7 +1418,7 @@ class DynamicNotch(QWidget):
         """Reload screenshots from CaptureStore into the ScreenshotsView."""
         self._screens_view._scan_existing()
 
-    def auto_expand_briefly(self, duration_ms: int = 1500):
+    def auto_expand_briefly(self, duration_ms: int = 2600):
         """Expand the notch to Screens tab, then auto-collapse after duration_ms."""
         self.expand(tab="screens")
         # Set up auto-collapse timer
@@ -1265,7 +1436,29 @@ class DynamicNotch(QWidget):
         self._auto_collapse_timer = None
 
     def set_status(self, text):
-        pass
+        """Show a transient status line in the notch (empty text hides it)."""
+        text = "" if text is None else str(text)
+        self._status_text = text
+        self._status_label.setText(text)
+        lowered = text.lower()
+        if "fail" in lowered or "error" in lowered or "unavailable" in lowered:
+            foreground, background = "#FFB6BA", "#331C29"
+        elif "offline" in lowered:
+            foreground, background = "#FCD34D", "#2A2310"
+        elif "sent" in lowered or "complete" in lowered or "success" in lowered:
+            foreground, background = "#A5EECF", "#102E29"
+        else:
+            foreground, background = "#B7D5FF", "#10233D"
+        self._status_label.setStyleSheet(
+            f"QLabel#notchStatus {{ color: {foreground}; font-size: 12px; "
+            f"font-weight: 600; padding: 7px 12px; "
+            f"background: {background}; border-radius: 9px; }}"
+        )
+        self._status_label.setVisible(bool(text))
 
     def update_status(self, text):
-        pass
+        self.set_status(text)
+
+    @property
+    def status_text(self):
+        return self._status_text

@@ -223,6 +223,7 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
                 pil_image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
         import numpy as np
+        img_arr: Any
         if pil_image is not None:
             img_arr = np.array(pil_image)
         else:

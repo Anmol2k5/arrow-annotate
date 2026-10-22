@@ -128,10 +128,39 @@ CREATE INDEX IF NOT EXISTS idx_change_requests_created ON change_requests(create
 CREATE INDEX IF NOT EXISTS idx_status_history_capture ON status_history(capture_id);
 """
 
+# Migration 3 — TaskBundles: group several captures under one instruction.
+# Captures without a task stay valid; task_id is nullable so no existing row
+# is rewritten and no asset ownership changes.
+_MIGRATION_3 = """
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    project_id TEXT,
+    project_path TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    instruction TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft'
+);
+
+CREATE TABLE IF NOT EXISTS task_captures (
+    task_id TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (task_id, capture_id),
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_captures_capture ON task_captures(capture_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
+"""
+
 # Ordered list of (version, sql). Version equals the target user_version.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
+    (3, _MIGRATION_3),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

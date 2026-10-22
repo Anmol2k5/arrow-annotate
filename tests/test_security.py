@@ -141,6 +141,19 @@ def test_capability_enable_disable():
     assert caps.is_enabled(Capability.CONTROL_NATIVE) is False
 
 
+def test_capability_reads_dotenv_opt_in(tmp_path, monkeypatch):
+    """ARROW_ENABLED_CAPABILITIES in .env must opt in (audit item P0-5)."""
+    (tmp_path / ".env").write_text(
+        "ARROW_ENABLED_CAPABILITIES=control_native, modify_files\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("arrow.core.config.os.getcwd", lambda: str(tmp_path))
+    monkeypatch.delenv("ARROW_ENABLED_CAPABILITIES", raising=False)
+    caps = CapabilityManager()
+    assert caps.is_enabled(Capability.CONTROL_NATIVE) is True
+    assert caps.is_enabled(Capability.MODIFY_FILES) is True
+    assert caps.is_enabled(Capability.EXECUTE_COMMAND) is False
+
+
 # ---------------------------------------------------------------------------
 # require_capability gate (full Flask stack)
 # ---------------------------------------------------------------------------
@@ -245,3 +258,90 @@ def test_read_capture_context_gated(client):
     )
     assert resp.status_code == 403
     assert "disabled" in resp.get_json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# Whole-surface unauthenticated rejection
+# ---------------------------------------------------------------------------
+
+PRIVATE_ENDPOINTS = [
+    ("GET", "/screenshot", None),
+    ("POST", "/screenshots/save", {"image": "AAAA"}),
+    ("GET", "/screenshots/whatever.png", None),
+    ("POST", "/resolve", {"query": "x"}),
+    ("POST", "/inspect", {"x": 1, "y": 2}),
+    ("POST", "/highlight/resolve", {"rect": {"x": 0, "y": 0, "width": 1, "height": 1}}),
+    ("POST", "/highlight/capture", {"rect": {"x": 0, "y": 0, "width": 1, "height": 1}}),
+    ("POST", "/execute", {"type": "click", "x": 1, "y": 2}),
+    ("POST", "/execute/batch", {"actions": []}),
+    ("POST", "/highlight/execute", {"rect": {}, "action": {"type": "click"}}),
+]
+
+
+@pytest.mark.parametrize("method,path,payload", PRIVATE_ENDPOINTS)
+def test_private_endpoints_reject_unauthenticated(client, method, path, payload):
+    if method == "GET":
+        resp = client.get(path)
+    else:
+        resp = client.post(path, json=payload)
+    assert resp.status_code == 401, f"{method} {path} returned {resp.status_code}"
+
+
+@pytest.mark.parametrize("method,path,payload", PRIVATE_ENDPOINTS)
+def test_private_endpoints_reject_bad_token(client, method, path, payload):
+    headers = {"Authorization": "Bearer definitely-not-the-token"}
+    if method == "GET":
+        resp = client.get(path, headers=headers)
+    else:
+        resp = client.post(path, json=payload, headers=headers)
+    assert resp.status_code == 401, f"{method} {path} returned {resp.status_code}"
+
+
+@pytest.mark.parametrize("method,path,payload", PRIVATE_ENDPOINTS)
+def test_private_endpoints_reject_hostile_origin_even_with_token(client, method, path, payload):
+    headers = {"Authorization": f"Bearer {_token()}", "Origin": "https://evil.example"}
+    if method == "GET":
+        resp = client.get(path, headers=headers)
+    else:
+        resp = client.post(path, json=payload, headers=headers)
+    assert resp.status_code == 403, f"{method} {path} returned {resp.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# /status information disclosure
+# ---------------------------------------------------------------------------
+
+
+def test_status_hides_diagnostics_without_token(client):
+    body = client.get("/status").get_json()
+    for leak in ("hostname", "ip", "platform", "python"):
+        assert leak not in body, f"/status leaked {leak} to an unauthenticated caller"
+    assert body["status"] == "healthy"
+    assert body["version"]
+
+
+def test_status_shows_diagnostics_with_token(client):
+    body = client.get(
+        "/status", headers={"Authorization": f"Bearer {_token()}"}
+    ).get_json()
+    for field in ("hostname", "ip", "platform", "python"):
+        assert field in body
+
+
+def test_status_version_matches_package_metadata(client):
+    body = client.get("/status").get_json()
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        expected = version("arrow-annotate")
+    except PackageNotFoundError:
+        expected = None
+    if expected:
+        assert body["version"] == expected
+    else:
+        assert body["version"]  # dev checkout: falls back to pyproject, never a lie like "1.0.0"
+        assert body["version"] != "1.0.0" or expected == "1.0.0"
+
+
+def test_agent_name_is_arrow_not_bluely(client):
+    assert client.get("/status").get_json()["agent"] == "arrow-annotate"

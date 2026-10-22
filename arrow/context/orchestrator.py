@@ -96,6 +96,7 @@ class ContextOrchestrator:
         ws_bridge: Any = None,
         project_dir: Optional[str] = None,
         screenshots_dir: str = SCREENSHOTS_DIR,
+        task_repo: Any = None,
     ):
         self.screenshot_service = screenshot_service or ScreenshotService()
         self.resolver = resolver or HighlightResolver(ws_bridge=ws_bridge)
@@ -104,6 +105,13 @@ class ContextOrchestrator:
         self.ws_bridge = ws_bridge
         self.project_dir = project_dir
         self.screenshots_dir = screenshots_dir
+        # Optional TaskBundle grouping; None keeps capture-only behaviour.
+        self.task_repo = task_repo
+        self.active_task_id: Optional[str] = None
+
+    def set_active_task(self, task_id: Optional[str]) -> None:
+        """Subsequent captures join this task. None detaches."""
+        self.active_task_id = task_id
 
     def set_project_dir(self, path: Optional[str]) -> None:
         """Update the selected repository for subsequent captures."""
@@ -124,6 +132,7 @@ class ContextOrchestrator:
         screen_info: Optional[ScreenInfo] = None,
         mapper: Optional[CoordinateMapper] = None,
         overlay: Any = None,
+        target: Optional[dict] = None,
     ) -> PipelineResult:
         """Execute the capture pipeline for a session.
 
@@ -155,7 +164,7 @@ class ContextOrchestrator:
             destination = self._resolve_anchor("destination", dest_ann) if dest_ann else None
 
             # 3. Repository context (dev-server URL inferred from the page).
-            page_url = (source.context or {}).get("pageUrl")
+            page_url = ((source.context if source is not None else None) or {}).get("pageUrl")
             repo = collect_repository_context(self.project_dir, page_url=page_url)
 
             # 4. Render annotated screenshot + crops (off-screen, pure PIL).
@@ -205,11 +214,20 @@ class ContextOrchestrator:
                 cursor=cursor,
                 window_title=window_title,
                 annotated_path=assets["annotated"],
+                assets=assets,
                 source=source,
                 change_request=change_request,
+                target=target,
             )
             if self.store is not None:
                 self.store.add(record)
+
+            # 7b. Attach to the active task, if the user is building one.
+            if self.task_repo is not None and self.active_task_id:
+                try:
+                    self.task_repo.add_capture(self.active_task_id, record.id)
+                except Exception as e:  # noqa: BLE001 - task grouping is not fatal
+                    log.warning("Could not attach capture to task: %s", e)
 
             # 8. Mirror results back onto the session object.
             session.assets = list(assets.values())
@@ -461,6 +479,8 @@ class ContextOrchestrator:
         annotated_path: str,
         source: Optional[AnchorResolution],
         change_request: Optional[ChangeRequest] = None,
+        assets: Optional[dict] = None,
+        target: Optional[dict] = None,
     ) -> CaptureRecord:
         source_ctx = (source.context if source else {}) or {}
 
@@ -481,6 +501,8 @@ class ContextOrchestrator:
             id=session.capture_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             screenshot_path=annotated_path,
+            assets=assets or {},
+            target=target,
             annotation_text=instruction,
             cursor_x=(cursor[0] if cursor else 0),
             cursor_y=(cursor[1] if cursor else 0),
