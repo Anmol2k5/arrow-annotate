@@ -50,20 +50,31 @@ line can also identify source and destination in one continuous stroke. If the
 gesture is ambiguous, draw the two regions separately. Move requests without a
 destination ask for clarification in the copied prompt.
 
-Open the notch and select **⚙ Capture settings** to change the held shortcut and
-speech language. **Ctrl+Shift** works as a two-key alternative. Fn is usually
+Open **⚙ Settings** in the notch. Settings stay inside the notch, with
+**Capture**, **Agents**, and **General** tabs. Capture changes the held shortcut
+and speech language. **Ctrl+Shift** works as a two-key alternative. Fn is usually
 handled by keyboard firmware, so it cannot be registered reliably. Preferences
 persist across restarts. If a chord conflicts with another application, choose
 another one in settings.
 
-Each card offers **Copy image + prompt**, **Image only**, **Prompt only**,
-**Codex**, and **Claude Code**. The combined clipboard includes actual annotated
-image pixels and prompt text. Some destination apps paste just one format; use
-the two separate copy buttons in that case. Select a repository with **📁** before
-direct sending. Install and sign in to the chosen CLI separately, then restart
-Arrow if PATH changed. Codex receives an image attachment; Claude receives the
-image in its stream input. Existing screenshots captured before this update
-retain their original pixels; make a new capture to test the drawing fix.
+For ChatGPT, click **Copy image + prompt**, paste to attach the image, then click
+**2 · Copy prompt** and paste again. The clipboard changes only when you click;
+there is no timed overwrite. **General → Clipboard** also offers combined copying
+for apps that accept image and text together. Windows receives actual PNG image
+data, not a screenshot path. **Image only** and **Prompt only** remain available.
+
+In **Settings → Agents**, open the install guide if a CLI is missing, then choose
+**Connect** for Codex or Claude Code. Finish the official sign-in in its browser
+or CLI window; Arrow checks the result and shows **Connected** only when confirmed.
+**Refresh connections** detects newly installed CLIs and retries status checks.
+Choose your project repository in the same tab, then use **Codex** or **Claude
+Code** on a capture card. Codex receives an image attachment; Claude receives
+the image in its stream input. Arrow does not store account credentials.
+
+**General** also controls automatic expansion for capture updates and keeping
+the notch open. Existing screenshots retain their original pixels; make a new
+capture to test drawing changes. Draw source and destination as separate mouse
+strokes when a continuous gesture is ambiguous.
 
 ## Linux development and MCP
 

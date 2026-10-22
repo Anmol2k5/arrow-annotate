@@ -28,6 +28,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -129,6 +130,26 @@ def classify_command(command: str) -> Optional[SafetyCategory]:
     return None
 
 
+def _find_cli_executable(name: str) -> Optional[str]:
+    """Find normal PATH tools, including standard Windows user installations."""
+    executable = shutil.which(name)
+    if executable or sys.platform != "win32":
+        return executable
+    directories = [Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"]
+    if os.environ.get("APPDATA"):
+        directories.append(Path(os.environ["APPDATA"]) / "npm")
+    if os.environ.get("LOCALAPPDATA"):
+        directories.append(Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links")
+    if os.environ.get("ProgramFiles"):
+        directories.append(Path(os.environ["ProgramFiles"]) / "nodejs")
+    for directory in directories:
+        for suffix in (".exe", ".cmd"):
+            candidate = directory / (name + suffix)
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 class BaseCLIProvider(Provider):
     """Shared subprocess plumbing for CLI-based providers.
 
@@ -144,11 +165,11 @@ class BaseCLIProvider(Provider):
     def __init__(
         self,
         confirm: ConfirmFn = default_deny,
-        which_fn: Callable[[str], Optional[str]] = shutil.which,
+        which_fn: Optional[Callable[[str], Optional[str]]] = None,
         popen_fn: Optional[Callable[..., subprocess.Popen]] = None,
     ):
         self._confirm = confirm
-        self._which = which_fn
+        self._which = which_fn if which_fn is not None else _find_cli_executable
         self._popen = popen_fn or subprocess.Popen
         self._process: Optional[subprocess.Popen] = None
         self._stdin_payload: Optional[str] = None

@@ -294,6 +294,17 @@ def _classify_intent(text: str, has_destination: bool, has_source: bool) -> tupl
         return Intent.FIX_INTERACTION, ["Instruction reports an interaction problem."], False
     if _has_any(text, _FIX_VISUAL_WORDS):
         return Intent.FIX_VISUAL_BUG, ["Instruction reports a visual bug."], False
+    # Infer placement only for a selected object referred to at a location,
+    # rather than treating every occurrence of "rakhna" (keep/put) as a move.
+    placement_phrase = re.search(
+        r"(?<!\w)(?:isko|ise|isey|इसको|इसे)\s+(?:(?:ham|hum|हम)\s+)?"
+        r"(?:yahan|yahaan|wahan|wahaan|idhar|udhar|यहाँ|यहां|वहाँ|वहां|इधर|उधर)\s+"
+        r"(?:(?:par|per|pe|पर|पे)\s+)?"
+        r"(?:(?:rakho|rakhna|रखो|रखना)(?!\w)|"
+        r"(?:rakhte|रखते)(?!\w)(?!\s+(?:hai|hain|है|हैं)(?!\w)))", text,
+    )
+    if has_source and placement_phrase:
+        return Intent.MOVE_ELEMENT, ["Selected source and object-location placement phrasing suggest a move."], True
     # "This thing is wanted here" can imply a move when an existing source is
     # selected. Desire words alone can also request an addition or style change.
     source_phrase = re.search(

@@ -56,6 +56,14 @@ try {
         }
         throw $TestFailure
     }
+    # The ordinary suite uses offscreen Qt. Exercise real Windows clipboard
+    # formats in a fresh process so offscreen cannot silently skip this check.
+    try {
+        $env:QT_QPA_PLATFORM = "windows"
+        Invoke-Checked $BuildPython @("-m", "pytest", "-q", "tests/test_capture_clipboard.py::test_native_windows_clipboard_exposes_png_and_unicode_text", "--junitxml", "build/windows/native-clipboard.xml")
+    } finally {
+        $env:QT_QPA_PLATFORM = "offscreen"
+    }
 } finally {
     $env:ARROW_HOME = $PreviousArrowHome
     $env:ARROW_DB_PATH = $PreviousArrowDbPath

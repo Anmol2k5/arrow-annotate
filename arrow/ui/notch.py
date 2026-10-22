@@ -43,8 +43,9 @@ from PyQt6.QtWidgets import (
 from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
 from arrow.server.server import AgentServer
-from arrow.storage.settings import get_project_dir, set_project_dir
+from arrow.storage.settings import get_project_dir, get_ui_preferences, set_project_dir
 from arrow.ui.clipboard import copy_capture
+from arrow.ui.settings_panel import SettingsPanel
 
 log = logging.getLogger("arrow.ui.notch")
 
@@ -378,6 +379,7 @@ def format_change_request(cr: dict) -> str:
 # ---------------------------------------------------------------------------
 class ScreenshotThumbnail(QFrame):
     deleted = pyqtSignal(object)
+    connection_requested = pyqtSignal()
     provider_finished = pyqtSignal(object, object, object)  # event, request, name
 
     def __init__(self, path, annotation_text="", timestamp="", window_title="",
@@ -390,6 +392,7 @@ class ScreenshotThumbnail(QFrame):
         self._change_request = change_request or {}
         self._preview = None
         self._provider_buttons = {}
+        self._awaiting_prompt_copy = False
         # Queued: emitted from a worker thread, delivered on the main thread.
         self.provider_finished.connect(self._on_provider_finished)
         self._setup_ui()
@@ -542,7 +545,8 @@ class ScreenshotThumbnail(QFrame):
         edit_row = QHBoxLayout()
         edit_row.setSpacing(6)
         edit_row.addWidget(self._action_button("Edit", self._edit_instruction))
-        edit_row.addWidget(self._action_button("Copy image + prompt", self._copy_request))
+        self._combined_copy_button = self._action_button("Copy image + prompt", self._copy_request)
+        edit_row.addWidget(self._combined_copy_button)
         v.addLayout(edit_row)
 
         copy_row = QHBoxLayout()
@@ -558,6 +562,7 @@ class ScreenshotThumbnail(QFrame):
             self._provider_buttons[name] = btn
             send_row.addWidget(btn)
         v.addLayout(send_row)
+        v.addWidget(self._action_button('Connect agents / choose repository', self.connection_requested.emit))
         self._action_status = QLabel("")
         self._action_status.setWordWrap(True)
         self._action_status.setStyleSheet("color: #94A3B8; font-size: 10px; border: none;")
@@ -675,11 +680,29 @@ class ScreenshotThumbnail(QFrame):
         if isinstance(mode, bool):
             mode = 'both'
         text = format_change_request(self._change_request) or self._text
+        if mode == 'both' and get_ui_preferences()['clipboard_mode'] == 'two_step':
+            try:
+                if not self._awaiting_prompt_copy:
+                    copy_capture(text, self._path, mode='image')
+                    self._awaiting_prompt_copy = True
+                    self._combined_copy_button.setText('2 · Copy prompt')
+                    self._action_status.setText('1/2 · Image copied. Paste it into ChatGPT to attach it, '
+                                                'then click “2 · Copy prompt” and paste again.')
+                else:
+                    copy_capture(text, self._path, mode='text')
+                    self._awaiting_prompt_copy = False
+                    self._combined_copy_button.setText('Copy image + prompt')
+                    self._action_status.setText('2/2 · Prompt copied. Paste it alongside the attached image.')
+            except ValueError as exc:
+                self._action_status.setText(str(exc))
+            return
         try:
             copy_capture(text, self._path, mode=mode)
         except ValueError as exc:
             self._action_status.setText(str(exc))
             return
+        self._awaiting_prompt_copy = False
+        self._combined_copy_button.setText('Copy image + prompt')
         messages = {
             'both': "Image + prompt copied. If your app pastes only one, use Image only / Prompt only.",
             'image': "Annotated image copied.", 'text': "Prompt copied.",
@@ -699,11 +722,8 @@ class ScreenshotThumbnail(QFrame):
             fallback_repo=get_project_dir(),
         )
         if request is None:
-            QMessageBox.warning(
-                self, f"Send to {name}",
-                "No repository is attached to this capture, so there is nowhere safe to work. "
-                "Select a repository first.",
-            )
+            self._action_status.setText('Choose your project repository in Settings › Agents before sending.')
+            self.connection_requested.emit()
             return
 
         try:
@@ -712,8 +732,8 @@ class ScreenshotThumbnail(QFrame):
             QMessageBox.warning(self, "Send", str(e))
             return
         if not provider.detect():
-            QMessageBox.warning(self, name, f"{name} CLI was not found on PATH. "
-                                "Install and sign in to the CLI, then restart Arrow if PATH changed.")
+            self._action_status.setText(f'Connect {name} in Settings › Agents before sending.')
+            self.connection_requested.emit()
             return
 
         self._set_sending(True, name)
@@ -820,7 +840,7 @@ class ScreenshotsView(QWidget):
         top.addWidget(repo_btn)
 
         doc_btn = QPushButton("⚙")
-        doc_btn.setToolTip("Capture settings: shortcut and speech language")
+        doc_btn.setToolTip("Settings: capture, agent connections, clipboard and notch")
         doc_btn.clicked.connect(self._settings)
         doc_btn.setFixedSize(36, 36)
         doc_btn.setStyleSheet("""
@@ -954,7 +974,7 @@ class ScreenshotsView(QWidget):
             self._repo_lbl.setToolTip("")
 
     def _settings(self):
-        callback = getattr(self.window(), "on_settings_requested", None)
+        callback = getattr(self.window(), "show_settings", None)
         if callback:
             callback()
 
@@ -1023,6 +1043,7 @@ class ScreenshotsView(QWidget):
     def _add_thumbnail(self, path, text="", timestamp="", window_title="", change_request=None):
         thumb = ScreenshotThumbnail(path, text, timestamp, window_title, change_request)
         thumb.deleted.connect(self._remove_thumbnail)
+        thumb.connection_requested.connect(lambda: self.window().show_settings('Agents'))
         self._thumbnails.append(thumb)
 
         count = self._hbox.count()
@@ -1050,7 +1071,8 @@ class DynamicNotch(QWidget):
         self._server = server
         self._state = "idle"
         self._border_radius = 16.0
-        self._docked = False
+        self._docked = get_ui_preferences()['keep_notch_open']
+        self._settings_open = False
         self._anim_progress = 0.0
         self._expanded_size = (SCREENSHOTS_W, SCREENSHOTS_H)
         self._idle_rect = QRect()
@@ -1062,6 +1084,8 @@ class DynamicNotch(QWidget):
         self._position_idle()
         self._anim_group = None
         self._auto_collapse_timer = None
+        if self._docked:
+            QTimer.singleShot(0, self.expand)
 
     # -- property for border-radius interpolation --
     def get_anim_progress(self):
@@ -1158,8 +1182,15 @@ class DynamicNotch(QWidget):
         self._status_label.hide()
         expanded_layout.addWidget(self._status_label)
 
+        self._content_stack = QStackedWidget()
         self._screens_view = ScreenshotsView()
-        expanded_layout.addWidget(self._screens_view, 1)
+        self._settings_view = SettingsPanel(self._save_capture_preferences)
+        self._settings_view.close_requested.connect(self.show_captures)
+        self._settings_view.repository_changed.connect(self._repository_changed)
+        self._settings_view.preferences_changed.connect(self._apply_ui_preferences)
+        self._content_stack.addWidget(self._screens_view)
+        self._content_stack.addWidget(self._settings_view)
+        expanded_layout.addWidget(self._content_stack, 1)
 
         self._expanded_w.hide()
         cl.addWidget(self._expanded_w, 1)
@@ -1202,6 +1233,40 @@ class DynamicNotch(QWidget):
 
         self._expanded_size = (SCREENSHOTS_W, SCREENSHOTS_H)
         self._animate_to(self._calc_expanded_rect(), 1.0)
+
+    def show_settings(self, tab='Capture'):
+        if self._auto_collapse_timer is not None:
+            self._auto_collapse_timer.stop()
+        self._settings_open = True
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self._content_stack.setCurrentWidget(self._settings_view)
+        self._settings_view.repository_input.setText(get_project_dir() or '')
+        self._settings_view.select_tab(tab)
+        self.expand()
+        self.raise_()
+        self.activateWindow()
+        self._settings_view.setFocus()
+
+    def show_captures(self):
+        self._settings_open = False
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._content_stack.setCurrentWidget(self._screens_view)
+        self.expand()
+
+    def _save_capture_preferences(self, shortcut, language):
+        callback = getattr(self, 'on_capture_preferences_changed', None)
+        if not callable(callback):
+            raise ValueError('Capture controls are not ready. Try again after startup.')
+        callback(shortcut, language)
+
+    def _repository_changed(self, path):
+        callback = getattr(self, 'on_project_selected', None)
+        if callback:
+            callback(path)
+        self._screens_view._refresh_repo_label()
+
+    def _apply_ui_preferences(self):
+        self.set_docked(get_ui_preferences()['keep_notch_open'])
 
     def collapse(self):
         if self._state == "idle":
@@ -1261,7 +1326,7 @@ class DynamicNotch(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        if not self._docked:
+        if not self._docked and not self._settings_open:
             self.collapse()
         super().leaveEvent(event)
 
@@ -1292,6 +1357,9 @@ class DynamicNotch(QWidget):
 
     def auto_expand_briefly(self, duration_ms: int = 4000):
         """Expand the notch to Screens tab, then auto-collapse after duration_ms."""
+        if not get_ui_preferences()['auto_expand_capture'] or self._settings_open:
+            return
+        self._content_stack.setCurrentWidget(self._screens_view)
         self.expand(tab="screens")
         # Set up auto-collapse timer
         if self._auto_collapse_timer is not None:
@@ -1303,14 +1371,14 @@ class DynamicNotch(QWidget):
 
     def _auto_collapse_tick(self):
         """Collapse unless user is hovering or docked."""
-        if not self._docked and not self.underMouse():
+        if not self._docked and not self._settings_open and not self.underMouse():
             self.collapse()
         self._auto_collapse_timer = None
 
     def set_status(self, text):
         self._status_label.setText(text)
         self._status_label.setVisible(bool(text))
-        if text and self._state == "idle":
+        if text and self._state == "idle" and get_ui_preferences()['auto_expand_capture']:
             self.expand()
 
     def update_status(self, text):

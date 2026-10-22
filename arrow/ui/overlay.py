@@ -130,7 +130,10 @@ class SelectionOverlay(QWidget):
             "QPushButton {color: white; background: #334155; border-radius: 8px; padding: 8px 12px;}"
         )
         row = QHBoxLayout(toolbar)
-        row.addWidget(QLabel("Draw and speak · Release shortcut / Enter to finish · Esc to cancel"))
+        instructions = QLabel('Circle source, release mouse, then circle destination if moving. '
+                              'Release shortcut / Enter to finish · Esc cancels.')
+        instructions.setWordWrap(True)
+        row.addWidget(instructions, 1)
         for text, signal in (("Done", self.finish_requested), ("Cancel", self.cancel_requested)):
             button = QPushButton(text)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)

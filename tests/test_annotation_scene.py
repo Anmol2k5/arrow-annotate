@@ -21,6 +21,19 @@ def connected_loops():
     return source + connector + destination
 
 
+def connected_arcs(sweep=300, start=-90, *, scale=1, dx=0, dy=0, noise=0):
+    def arc(cx, cy, rx, ry):
+        points = [{"x": cx + rx * math.cos(math.radians(start + sweep * i / 48)),
+                   "y": cy + ry * math.sin(math.radians(start + sweep * i / 48))} for i in range(49)]
+        return [{"x": (p["x"] + noise * math.sin(i * 1.7)) * scale + dx,
+                 "y": (p["y"] + noise * math.cos(i * 1.3)) * scale + dy} for i, p in enumerate(points)]
+    source, destination = arc(160, 140, 60, 40), arc(700, 520, 80, 50)
+    a, b = source[-1], destination[0]
+    connector = [{"x": a["x"] + (b["x"] - a["x"]) * i / 50,
+                  "y": a["y"] + (b["y"] - a["y"]) * i / 50} for i in range(1, 50)]
+    return source + connector + destination
+
+
 def semantic(scene, role):
     return next(a for a in scene if a.role == role)
 
@@ -69,8 +82,35 @@ def test_loop_recognition_is_independent_of_scale_and_desktop_origin(scale, dx, 
     assert destination.geometry["y"] == pytest.approx(235 * scale + dy - 8)
 
 
+@pytest.mark.parametrize("start", [-90, 0, 45, 90, 180])
+@pytest.mark.parametrize("scale,dx,dy,noise", [(1, 0, 0, 0), (0.2, -1000, -500, 0.15)])
+def test_nearly_complete_simple_arcs_identify_both_regions(start, scale, dx, dy, noise):
+    points = connected_arcs(start=start, scale=scale, dx=dx, dy=dy, noise=noise)
+    scene = build_annotation_scene([{"role": "source", "points": points}])
+    assert semantic(scene, "source").geometry["width"] < 150 * scale + 16
+    assert semantic(scene, "destination").geometry["width"] < 180 * scale + 16
+    assert scene[-1].type == "arrow"
+    assert next(a for a in scene if a.type == "freehand").geometry["points"] == points
+
+
+@pytest.mark.parametrize("sweep", [180, 240, 270])
+@pytest.mark.parametrize("start", [-90, 0, 45, 90, 180])
+@pytest.mark.parametrize("noise", [0, 0.15])
+def test_open_u_arcs_do_not_become_regions_by_borrowing_the_straight_connector(sweep, start, noise):
+    scene = build_annotation_scene([{"role": "source", "points": connected_arcs(sweep=sweep, start=start,
+                                                                                 noise=noise)}])
+    assert not any(a.role == "destination" or a.type == "arrow" for a in scene)
+
+
+def test_nearly_complete_loops_also_work_in_reverse_drawing_direction():
+    scene = build_annotation_scene([{"role": "source", "points": connected_arcs(sweep=-300)}])
+    assert semantic(scene, "destination").geometry["width"] < 196
+    assert scene[-1].type == "arrow"
+
+
 @pytest.mark.parametrize("points", [
     [{"x": x, "y": x / 2} for x in range(0, 401, 10)],
+    [{"x": i * 4, "y": 100 + 50 * math.sin(i * math.pi / 50)} for i in range(101)],
     oval(100, 100),
     [{"x": 0, "y": 0}, {"x": 0, "y": 100}, {"x": 100, "y": 100}, {"x": 100, "y": 0}],
     # Figure eight: neither half may become a separate target.

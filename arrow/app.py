@@ -7,7 +7,7 @@ from concurrent.futures import Future
 from copy import copy
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
+from PyQt6.QtWidgets import QApplication
 
 from arrow.capture.coordinator import CaptureCoordinator
 from arrow.capture.screenshot_service import ScreenshotService
@@ -18,6 +18,7 @@ from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
 from arrow.storage.settings import (
+    SPEECH_LANGUAGES,
     get_capture_shortcut,
     get_project_dir,
     get_speech_language,
@@ -25,7 +26,6 @@ from arrow.storage.settings import (
 )
 from arrow.ui.notch import DynamicNotch
 from arrow.ui.overlay import SelectionOverlay
-from arrow.ui.settings_dialog import CaptureSettingsDialog
 from arrow.ui.tray import install_tray
 from arrow.ui.voice_input import VoiceInput
 
@@ -297,34 +297,31 @@ def main():
         log.warning("Could not register cancellation shortcut: %s", exc)
     app.aboutToQuit.connect(cancel_shortcut.close)
 
-    def configure_capture():
-        dialog = CaptureSettingsDialog(get_capture_shortcut(), get_speech_language(), parent=notch)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        key, language = dialog.values()
+    def configure_capture(key, language):
+        if coordinator.busy:
+            raise ValueError('Finish or cancel the current capture before changing capture settings.')
+        if language not in SPEECH_LANGUAGES:
+            raise ValueError('Choose a supported speech language.')
         old_key = get_capture_shortcut()
+        shortcut.rebind(key)
         try:
-            shortcut.rebind(key)
-            try:
-                set_capture_preferences(key, language)
-            except Exception:
-                shortcut.rebind(old_key)
-                raise
-        except Exception as exc:
-            QMessageBox.warning(notch, "Capture settings", str(exc))
-            return
+            set_capture_preferences(key, language)
+        except Exception:
+            shortcut.rebind(old_key)
+            raise
         voice.language = language
         notch.setToolTip(f"Hold {key} to draw and speak; release to capture. Enter finishes, Esc cancels.")
         notch.set_status(f"Hold {key} to draw and speak. Release to capture.")
 
-    notch.on_settings_requested = configure_capture
+    notch.on_capture_preferences_changed = configure_capture
+    notch.on_settings_requested = lambda: notch.show_settings()
     notch.setToolTip(f"Hold {get_capture_shortcut()} to draw and speak; release to capture.")
 
     # -- Graceful shutdown on SIGINT --
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # Retain the tray for the lifetime of the Qt event loop.
-    tray = install_tray(app, notch, configure_capture, begin_capture)
+    tray = install_tray(app, notch, notch.on_settings_requested, begin_capture)
     if tray is not None:
         app.setQuitOnLastWindowClosed(False)
         app.aboutToQuit.connect(tray.hide)

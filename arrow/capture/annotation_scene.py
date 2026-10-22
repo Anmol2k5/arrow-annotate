@@ -66,6 +66,33 @@ class _Loop:
     closure: float
 
 
+def _angular_coverage(points: list[Point], bounds: Bounds) -> float:
+    x1, y1, x2, y2 = bounds
+    center = ((x1 + x2) / 2, (y1 + y2) / 2)
+    # Measure around an ellipse's normalized axes, so a 300-degree oval is not
+    # rejected merely because the open sector is near its longer axis.
+    vectors = [((point[0] - center[0]) / (x2 - x1), (point[1] - center[1]) / (y2 - y1))
+               for point in points]
+    return abs(sum(math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])
+                   for a, b in zip(vectors, vectors[1:])))
+
+
+def _has_contour_turn(points: list[Point], end: int, diagonal: float) -> bool:
+    """Do not complete an open U by borrowing a straight connector segment."""
+    if end <= 0 or end >= len(points) - 1:
+        return False
+    span = diagonal * 0.08
+    before, after = end - 1, end + 1
+    while before > 0 and _distance(points[before], points[end]) < span:
+        before -= 1
+    while after < len(points) - 1 and _distance(points[after], points[end]) < span:
+        after += 1
+    a, b, c = points[before], points[end], points[after]
+    cross = _cross(a, b, c)
+    dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])
+    return abs(math.atan2(cross, dot)) >= math.radians(3)
+
+
 def _closed_prefixes(points: list[Point]) -> list[_Loop]:
     """Find compact, simple, nearly closed loops starting at the first point."""
     candidates = []
@@ -86,10 +113,13 @@ def _closed_prefixes(points: list[Point]) -> list[_Loop]:
         if end < 4 or min(width, height) <= max(width, height) * 0.15 or diagonal < 1e-5:
             continue
         closure = _distance(origin, point) / diagonal
-        if (closure > 0.18 or not 1.8 <= path_length / diagonal <= 4.0
+        if (closure > 0.4 or not 1.75 <= path_length / diagonal <= 4.0
                 or abs(area) < width * height * 0.5):
             continue
-        if _simple_path(points[:end + 1], closed=True):
+        prefix = points[:end + 1]
+        if (_angular_coverage(prefix, (min_x, min_y, max_x, max_y)) >= math.radians(290)
+                and _has_contour_turn(points, end, diagonal)
+                and _simple_path(prefix, closed=True)):
             candidates.append(_Loop(end, (min_x, min_y, max_x, max_y), diagonal, closure))
     return candidates
 

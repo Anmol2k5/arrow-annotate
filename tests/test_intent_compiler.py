@@ -87,6 +87,60 @@ def test_explicit_hindi_move_requires_destination(instruction):
     assert any(a.field == "destination" and a.severity == "blocking" for a in req.ambiguities)
 
 
+@pytest.mark.parametrize("instruction", [
+    "Eid Nawaz Wali chij Hai Isko Ham Yahan per rakhte to Jyada",
+    "isko yahan rakho",
+    "isko yahaan par rakhna",
+    "isko hum yahan pe rakhte",
+    "इसे यहाँ रखो",
+    "इसे यहाँ रखना",
+    "इसको हम यहाँ पर रखते",
+])
+def test_source_selected_placement_phrase_infers_move_and_requires_target(instruction):
+    req = _compile(
+        raw_instruction=instruction,
+        annotations=[{"role": "source", "type": "rectangle", "label": "1 Source",
+                      "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}}],
+    )
+
+    assert req.normalized_intent == Intent.MOVE_ELEMENT
+    assert req.raw_user_request == instruction
+    assert req.destination is None
+    assert req.clarification_required is True
+    assert any(a.field == "destination" and a.severity == "blocking" for a in req.ambiguities)
+    assert any(i.field == "normalized_intent" for i in req.inferences)
+    assert "1 Source" in req.summary
+    assert "destination needs clarification" in req.summary
+    assert req.likely_files == []
+    assert req.source.element == {}
+
+
+@pytest.mark.parametrize("instruction", [
+    "yahan par rakhte hain",
+    "isko yahan rakhte hain",
+    "yahan par bahut jagah hai",
+    "isko yahan dekhte hain",
+    "isko wahi rakhna",
+    "isko yahan mat rakho",
+    "rakhna",
+    "यहाँ पर रखते हैं",
+    "इसे यहाँ रखते हैं",
+    "इसे यहाँ मत रखो",
+])
+def test_informational_or_incomplete_placement_phrase_does_not_infer_move(instruction):
+    req = _compile(raw_instruction=instruction, annotations=[{"role": "source", "label": "card"}])
+
+    assert req.normalized_intent == Intent.UNKNOWN
+    assert not any(c.operation == "move" for c in req.requested_changes)
+
+
+def test_placement_phrase_without_selected_source_does_not_infer_move():
+    req = _compile(raw_instruction="isko yahan rakho")
+
+    assert req.normalized_intent == Intent.UNKNOWN
+    assert req.source is None
+
+
 @pytest.mark.parametrize("instruction, expected", [
     ("mujhe blue color chahiye", Intent.RESTYLE_ELEMENT),
     ("add button yahan chahiye", Intent.ADD_ELEMENT),

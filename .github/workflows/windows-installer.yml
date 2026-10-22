@@ -73,6 +73,7 @@ jobs:
             dist/smoke-reports/
             build/windows/ci-build.log
             build/windows/source-tests.xml
+            build/windows/native-clipboard.xml
             build/windows/pyinstaller/windows/warn-windows.txt
           if-no-files-found: warn
           retention-days: 30

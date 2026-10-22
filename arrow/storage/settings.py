@@ -101,7 +101,28 @@ def set_capture_preferences(shortcut: str, language: str) -> None:
     _save(data)
 
 
+def get_ui_preferences() -> dict:
+    data = _load()
+    mode = data.get('clipboard_mode', 'two_step')
+    return {
+        'clipboard_mode': mode if mode in ('two_step', 'combined') else 'two_step',
+        'auto_expand_capture': data.get('auto_expand_capture') is not False,
+        'keep_notch_open': data.get('keep_notch_open') is True,
+    }
+
+
+def set_ui_preferences(*, clipboard_mode: str, auto_expand_capture: bool, keep_notch_open: bool) -> None:
+    if clipboard_mode not in ('two_step', 'combined'):
+        raise ValueError('Choose two-step or combined clipboard mode.')
+    if not isinstance(auto_expand_capture, bool) or not isinstance(keep_notch_open, bool):
+        raise ValueError('Notch preferences must be enabled or disabled.')
+    data = _load()
+    data.update(clipboard_mode=clipboard_mode, auto_expand_capture=auto_expand_capture, keep_notch_open=keep_notch_open)
+    _save(data)
+
+
 __all__ = [
     "config_dir", "config_path", "get_project_dir", "set_project_dir",
     "get_capture_shortcut", "get_speech_language", "set_capture_preferences",
+    "get_ui_preferences", "set_ui_preferences",
 ]
