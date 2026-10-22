@@ -37,6 +37,11 @@ captures remain available through MCP and direct providers when it is offline.
 
 ## Capture and send
 
+Arrow rests as a slim rounded pill at the top center of the primary screen.
+Hover or click it to expand captures and settings. A compact blue waveform
+indicates recording; leaving the expanded panel collapses it unless it is pinned
+or settings are being edited.
+
 Hold **Ctrl+Space**, draw around the source (and optionally a destination), and
 speak your complete instruction. Release either shortcut key to finish. Speech
 pauses do not end the capture. Arrow captures the screen immediately on release,

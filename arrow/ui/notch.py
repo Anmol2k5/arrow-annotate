@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -55,7 +56,8 @@ log = logging.getLogger("arrow.ui.notch")
 NOTCH_BG = "rgba(9, 9, 11, 240)"
 NOTCH_BORDER = "rgba(255, 255, 255, 12)"
 
-IDLE_W, IDLE_H = 80, 32
+# A slim visible pill inside a slightly larger hover/click target.
+IDLE_W, IDLE_H = 152, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
 SCREENSHOTS_W, SCREENSHOTS_H = 760, 640
@@ -1070,7 +1072,7 @@ class DynamicNotch(QWidget):
         super().__init__()
         self._server = server
         self._state = "idle"
-        self._border_radius = 16.0
+        self._border_radius = 6.0
         self._docked = get_ui_preferences()['keep_notch_open']
         self._settings_open = False
         self._anim_progress = 0.0
@@ -1081,6 +1083,7 @@ class DynamicNotch(QWidget):
 
         self._setup_window()
         self._build_ui()
+        self.set_anim_progress(0)
         self._position_idle()
         self._anim_group = None
         self._auto_collapse_timer = None
@@ -1093,17 +1096,30 @@ class DynamicNotch(QWidget):
 
     def set_anim_progress(self, v):
         self._anim_progress = v
-        br = int(16 + (20 - 16) * v)
+        br = round(6 + 14 * v)
         self._border_radius = br
+        collapsed = (12, 4, 12, 16)
+        expanded = (24, 20, 24, 20)
+        self._main_layout.setContentsMargins(*(round(a + (b - a) * v) for a, b in zip(collapsed, expanded)))
+        self._shadow.setBlurRadius(8 + 27 * v)
+        self._shadow.setOffset(0, 2 + 14 * v)
+        color = f'rgba({round(24 - 15*v)}, {round(24 - 15*v)}, {round(27 - 16*v)}, {round(205 + 35*v)})'
         self._container.setStyleSheet(f"""
             #notchContainer {{
-                background: {NOTCH_BG};
+                background: {color};
                 border: 1px solid {NOTCH_BORDER};
                 border-radius: {br}px;
             }}
         """)
 
     anim_progress = pyqtProperty(float, get_anim_progress, set_anim_progress)
+
+    def paintEvent(self, event):
+        # Keep the invisible padding usable on Windows layered windows, where
+        # alpha-zero pixels otherwise pass hover/clicks to the application below.
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        painter.end()
 
     # ------------------------------------------------------------------
     # Window setup
@@ -1119,17 +1135,16 @@ class DynamicNotch(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_MouseTracking, False)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(35)
-        shadow.setOffset(0, 16)
-        shadow.setColor(QColor(0, 0, 0, 150))
-        self.setGraphicsEffect(shadow)
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setColor(QColor(0, 0, 0, 150))
+        self.setGraphicsEffect(self._shadow)
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self):
         self._main_layout = QVBoxLayout(self)
+        self._main_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._main_layout.setContentsMargins(24, 20, 24, 20)
         self._main_layout.setSpacing(0)
 
@@ -1146,24 +1161,18 @@ class DynamicNotch(QWidget):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
 
-        # ---- Idle widget (logo ↔ waveform stacked) ----
+        # ---- Idle handle: unadorned pill, with a compact recording waveform ----
         self._idle_w = QWidget()
         idle_l = QHBoxLayout(self._idle_w)
         idle_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
         idle_l.setContentsMargins(0, 0, 0, 0)
 
         self._idle_stack = QStackedWidget()
-        self._idle_stack.setFixedSize(44, 22)
-
-        self._logo = GlowingTriangleLogo()
-        logo_container = QWidget()
-        logo_layout = QHBoxLayout(logo_container)
-        logo_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_layout.setContentsMargins(0, 0, 0, 0)
-        logo_layout.addWidget(self._logo)
+        self._idle_stack.setFixedSize(44, 8)
 
         self._waveform = MiniWaveformWidget()
-        self._idle_stack.addWidget(logo_container)   # index 0 = logo
+        self._waveform.setFixedSize(44, 8)
+        self._idle_stack.addWidget(QWidget())       # index 0 = plain pill
         self._idle_stack.addWidget(self._waveform)    # index 1 = waveform
         self._idle_stack.setCurrentIndex(0)
 
@@ -1205,7 +1214,7 @@ class DynamicNotch(QWidget):
         if screen:
             ag = screen.availableGeometry()
             x = ag.center().x() - IDLE_W // 2
-            y = TOP_OFFSET
+            y = ag.y() + TOP_OFFSET
             self._idle_rect = QRect(x, y, IDLE_W, IDLE_H)
             self.setGeometry(self._idle_rect)
 
@@ -1287,7 +1296,7 @@ class DynamicNotch(QWidget):
         if screen:
             ag = screen.availableGeometry()
             x = ag.center().x() - IDLE_W // 2
-            y = TOP_OFFSET
+            y = ag.y() + TOP_OFFSET
             self._idle_rect = QRect(x, y, IDLE_W, IDLE_H)
 
     def _animate_to(self, target_rect, target_progress):
@@ -1325,6 +1334,13 @@ class DynamicNotch(QWidget):
         self.expand()
         super().enterEvent(event)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._state == 'idle':
+            self.expand()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
     def leaveEvent(self, event):
         if not self._docked and not self._settings_open:
             self.collapse()
@@ -1342,13 +1358,13 @@ class DynamicNotch(QWidget):
     # Public API
     # ------------------------------------------------------------------
     def set_recording(self, recording: bool):
-        """Toggle idle pill between logo (default) and waveform (recording)."""
+        """Show a compact waveform while recording, preserving the slim pill."""
         self._is_recording = recording
         if recording:
             self._idle_stack.setCurrentIndex(1)  # waveform
             self._waveform.start()
         else:
-            self._idle_stack.setCurrentIndex(0)  # logo
+            self._idle_stack.setCurrentIndex(0)  # plain pill
             self._waveform.stop()
 
     def refresh_screenshots(self):

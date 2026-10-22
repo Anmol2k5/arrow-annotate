@@ -327,6 +327,7 @@ def main():
         app.aboutToQuit.connect(tray.hide)
     if getattr(sys, 'frozen', False):
         notch.set_status(f"Hold {get_capture_shortcut()} to draw and speak. Release to capture. Settings and Quit are in the system tray.")
+        notch.auto_expand_briefly()
     sys.exit(app.exec())
 
 
