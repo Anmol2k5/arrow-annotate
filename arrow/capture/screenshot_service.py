@@ -1,10 +1,11 @@
 import math
 import os
 import time
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import mss
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
 from arrow.capture.session import Annotation
@@ -16,6 +17,20 @@ SCREENSHOTS_DIR = os.path.join(ROOT_DIR, "screenshots")
 # Claude vision pricing: ~width*height/750 tokens. At 1568px long edge a
 # Retina frame costs ~2100 tokens instead of the 232K a raw capture costs.
 MAX_AGENT_EDGE = 1568
+
+
+@lru_cache(maxsize=32)
+def _annotation_font(size: int) -> Any:
+    """Use a scalable font on both Windows and non-Windows capture hosts."""
+    for path in ("C:\\Windows\\Fonts\\arialbd.ttf", "DejaVuSans-Bold.ttf"):
+        try:
+            return ImageFont.truetype(path, size=size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Older Pillow releases only provide a fixed default font.
+        return ImageFont.load_default()
 
 
 def find_mss_monitor(sct: Any, screen: ScreenInfo) -> Dict[str, Any]:
@@ -124,14 +139,6 @@ class ScreenshotService:
         draw_overlay = ImageDraw.Draw(overlay)
         draw_static = ImageDraw.Draw(annotated_img)
 
-        # Setup standard font
-        font_path = "C:\\Windows\\Fonts\\arialbd.ttf"
-        font: Any
-        try:
-            font = ImageFont.truetype(font_path, size=15)
-        except IOError:
-            font = ImageFont.load_default()
-
         for ann in sorted(annotations, key=lambda a: a.order):
             # Select role colors
             role_color = {
@@ -140,6 +147,11 @@ class ScreenshotService:
                 "supporting": (59, 130, 246),    # Blue
                 "informational": (167, 139, 250) # Purple
             }.get(ann.role, (167, 139, 250))
+            if isinstance(ann.style.get("color"), str):
+                try:
+                    role_color = ImageColor.getrgb(ann.style["color"])[:3]
+                except ValueError:
+                    pass
 
             geom = ann.geometry
             if not geom:
@@ -147,7 +159,7 @@ class ScreenshotService:
 
             if ann.type == "highlight":
                 # Draw transparent highlight rectangle on overlay
-                _, rect = mapper.virtual_rect_to_physical_rect(
+                screen, rect = mapper.virtual_rect_to_physical_rect(
                     geom.get("x", 0.0), geom.get("y", 0.0),
                     geom.get("width", 0.0), geom.get("height", 0.0)
                 )
@@ -157,26 +169,31 @@ class ScreenshotService:
                 # Translucent fill + solid outline
                 fill_color = role_color + (40,)  # 15% opacity
                 border_color = role_color + (255,)
-                draw_overlay.rectangle([rx1, ry1, rx2, ry2], fill=fill_color, outline=border_color, width=3)
+                draw_overlay.rectangle([rx1, ry1, rx2, ry2], fill=fill_color, outline=border_color,
+                                       width=max(1, round(3 * screen.scale)))
 
             elif ann.type == "rectangle":
-                _, rect = mapper.virtual_rect_to_physical_rect(
+                screen, rect = mapper.virtual_rect_to_physical_rect(
                     geom.get("x", 0.0), geom.get("y", 0.0),
                     geom.get("width", 0.0), geom.get("height", 0.0)
                 )
                 rx1, ry1 = rect["x"], rect["y"]
                 rx2, ry2 = rx1 + rect["width"], ry1 + rect["height"]
                 border_color = role_color + (255,)
-                draw_static.rectangle([rx1, ry1, rx2, ry2], outline=border_color, width=4)
+                draw_static.rectangle([rx1, ry1, rx2, ry2], outline=border_color,
+                                      width=max(1, round(4 * screen.scale)))
 
             elif ann.type == "pointer":
                 screen, px, py = mapper.virtual_to_physical(geom.get("x", 0.0), geom.get("y", 0.0))
-                pr = int(12 * screen.scale)
+                pr = max(1, round(12 * screen.scale))
                 
                 fill_color = role_color + (100,)
                 border_color = role_color + (255,)
-                draw_overlay.ellipse([px - pr, py - pr, px + pr, py + pr], fill=fill_color, outline=border_color, width=3)
-                draw_static.ellipse([px - 3, py - 3, px + 3, py + 3], fill=role_color + (255,))
+                draw_overlay.ellipse([px - pr, py - pr, px + pr, py + pr], fill=fill_color, outline=border_color,
+                                     width=max(1, round(3 * screen.scale)))
+                center_radius = max(1, round(3 * screen.scale))
+                draw_static.ellipse([px - center_radius, py - center_radius, px + center_radius, py + center_radius],
+                                    fill=role_color + (255,))
 
             elif ann.type == "arrow":
                 screen = mapper.find_screen(geom.get("x1", 0.0), geom.get("y1", 0.0))
@@ -185,12 +202,14 @@ class ScreenshotService:
                 
                 arrow_color = role_color + (255,)
                 # Neon glow simulation for arrow line
-                draw_overlay.line([(px1, py1), (px2, py2)], fill=role_color + (30,), width=int(14 * screen.scale), joint="round")
-                draw_static.line([(px1, py1), (px2, py2)], fill=arrow_color, width=int(4 * screen.scale), joint="round")
+                draw_overlay.line([(px1, py1), (px2, py2)], fill=role_color + (30,),
+                                  width=max(1, round(14 * screen.scale)), joint="round")
+                draw_static.line([(px1, py1), (px2, py2)], fill=arrow_color,
+                                 width=max(1, round(4 * screen.scale)), joint="round")
                 
                 # Draw arrowhead
                 angle = math.atan2(py2 - py1, px2 - px1)
-                arrow_len = int(16 * screen.scale)
+                arrow_len = max(1, round(16 * screen.scale))
                 arrow_angle = math.pi / 6
                 p1 = (px2 - arrow_len * math.cos(angle - arrow_angle), py2 - arrow_len * math.sin(angle - arrow_angle))
                 p2 = (px2 - arrow_len * math.cos(angle + arrow_angle), py2 - arrow_len * math.sin(angle + arrow_angle))
@@ -212,33 +231,40 @@ class ScreenshotService:
                         phys_points.append((px, py))
                     
                     # Simulated neon stroke
-                    draw_overlay.line(phys_points, fill=role_color + (25,), width=int(16 * screen.scale), joint="round")
-                    draw_overlay.line(phys_points, fill=role_color + (80,), width=int(8 * screen.scale), joint="round")
-                    draw_static.line(phys_points, fill=(230, 220, 255, 255), width=int(3 * screen.scale), joint="round")
+                    draw_overlay.line(phys_points, fill=role_color + (25,),
+                                      width=max(1, round(16 * screen.scale)), joint="round")
+                    draw_overlay.line(phys_points, fill=role_color + (80,),
+                                      width=max(1, round(8 * screen.scale)), joint="round")
+                    core_color = role_color if ann.style.get("color") else (230, 220, 255)
+                    draw_static.line(phys_points, fill=core_color + (255,),
+                                     width=max(1, round(3 * screen.scale)), joint="round")
 
             # Draw Label if present
             if ann.label:
                 lx, ly = geom.get("x", 0.0), geom.get("y", 0.0)
-                if ann.type in ("rectangle", "highlight"):
-                    ly = geom.get("y", 0.0) - (12 / mapper.find_screen(lx, ly).scale)
-                elif ann.type == "pointer":
-                    lx += 15 / mapper.find_screen(lx, ly).scale
-                    ly -= 15 / mapper.find_screen(lx, ly).scale
-                
-                _, px, py = mapper.virtual_to_physical(lx, ly)
-                
-                # Compute dimensions
-                try:
-                    tbbox = draw_static.textbbox((px, py), ann.label, font=font)
-                    tw = tbbox[2] - tbbox[0]
-                    th = tbbox[3] - tbbox[1]
-                except AttributeError:
-                    tw = len(ann.label) * 8
-                    th = 15
-                
-                # Background container for readability
-                draw_static.rectangle([px - 4, py - th - 4, px + tw + 8, py + 4], fill=(0, 0, 0, 180))
-                draw_static.text((px, py - th), ann.label, fill=(255, 255, 255), font=font)
+                screen, px, py = mapper.virtual_to_physical(lx, ly)
+                font_size = max(1, round(15 * screen.scale))
+                font = _annotation_font(font_size)
+                padding = max(1, round(4 * screen.scale))
+                tbbox = draw_static.textbbox((0, 0), ann.label, font=font)
+                tw, th = tbbox[2] - tbbox[0], tbbox[3] - tbbox[1]
+                # Long labels also fit when the screenshot is unusually narrow.
+                available_w = max(1, annotated_img.width - 2 * padding)
+                available_h = max(1, annotated_img.height - 2 * padding)
+                if tw > available_w or th > available_h:
+                    ratio = min(available_w / max(1, tw), available_h / max(1, th))
+                    font = _annotation_font(max(1, int(font_size * ratio)))
+                    tbbox = draw_static.textbbox((0, 0), ann.label, font=font)
+                    tw, th = tbbox[2] - tbbox[0], tbbox[3] - tbbox[1]
+                box_width, box_height = tw + 2 * padding, th + 2 * padding
+                if ann.type == "pointer":
+                    px += round(15 * screen.scale)
+                label_x = max(0, min(px, annotated_img.width - box_width))
+                label_y = max(0, min(py - box_height - padding, annotated_img.height - box_height))
+                draw_static.rectangle([label_x, label_y, label_x + box_width - 1, label_y + box_height - 1],
+                                      fill=(0, 0, 0, 220))
+                draw_static.text((label_x + padding - tbbox[0], label_y + padding - tbbox[1]), ann.label,
+                                 fill=(255, 255, 255, 255), font=font)
 
         # Composite translucent annotations onto base raw image
         final_img = Image.alpha_composite(annotated_img, overlay)

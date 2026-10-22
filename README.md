@@ -43,6 +43,13 @@ pauses do not end the capture. Arrow captures the screen immediately on release,
 then waits for transcription before showing the saved card. **Esc** cancels.
 The capture button also starts a session; use **Done** or **Enter** to finish it.
 
+The first stroke gets a red **1 Source** box; the second gets a green
+**2 Destination** box and a connecting arrow. These markers appear in both the
+overlay and the saved image. Two clearly closed, separated loops joined by a
+line can also identify source and destination in one continuous stroke. If the
+gesture is ambiguous, draw the two regions separately. Move requests without a
+destination ask for clarification in the copied prompt.
+
 Open the notch and select **⚙ Capture settings** to change the held shortcut and
 speech language. **Ctrl+Shift** works as a two-key alternative. Fn is usually
 handled by keyboard firmware, so it cannot be registered reliably. Preferences

@@ -1,5 +1,6 @@
 """Regression coverage for preserving and exporting the drawn annotation scene."""
 
+import math
 import os
 import time
 
@@ -80,13 +81,13 @@ def test_finishing_while_mouse_is_down_exports_the_whole_stroke(overlay):
     assert len(results) == 1
     result = results[0]
     annotations = [Annotation.model_validate(item) for item in result["annotations"]]
-    assert len(annotations) == 1
-    annotation = annotations[0]
-    assert annotation.type == "freehand"
-    assert annotation.role == "source"
+    assert [(a.type, a.role) for a in annotations] == [("rectangle", "source"), ("freehand", "supporting")]
+    source, annotation = annotations
+    assert source.label == "1 Source"
+    assert annotation.style["semantic_role"] == "source"
     assert annotation.coordinateSpace == "virtual_screen"
     assert annotation.geometry["points"] == expected
-    assert {k: annotation.geometry[k] for k in ("x", "y", "width", "height")} == result["source"]
+    assert source.geometry == result["source"]
     assert result["x"] == result["source"]["x"]
     assert [{k: p[k] for k in ("x", "y")} for p in overlay.get_gesture_trail()] == expected
     assert not overlay.isVisible()
@@ -100,9 +101,90 @@ def test_mouse_release_includes_final_endpoint_and_keeps_source_and_destination(
 
     result = capture(overlay)[0]
 
-    assert [a["role"] for a in result["annotations"]] == ["source", "destination"]
-    assert result["annotations"][0]["geometry"]["points"][-1] == {"x": 40, "y": 50}
+    assert [(a["type"], a["role"]) for a in result["annotations"]] == [
+        ("rectangle", "source"), ("rectangle", "destination"),
+        ("freehand", "supporting"), ("freehand", "supporting"), ("arrow", "informational"),
+    ]
+    assert result["annotations"][2]["geometry"]["points"][-1] == {"x": 40, "y": 50}
     assert result["destination"]["x"] > result["source"]["x"]
+
+
+def test_completed_strokes_show_semantic_boxes_and_connector_before_export(overlay):
+    draw(overlay, start=(100, 300), end=(180, 360))
+    draw(overlay, start=(400, 420), end=(480, 480))
+
+    image = overlay.grab().toImage()
+
+    # Border pixels lie outside the raw strokes and cannot pass with freehand alone.
+    source = image.pixelColor(92, 330)
+    destination = image.pixelColor(488, 450)
+    assert source.red() > 200 and source.green() < 100
+    assert destination.green() > 150 and destination.red() < 100
+    # The two disjoint strokes cannot produce this middle connector pixel.
+    assert image.pixelColor(290, 390).alpha() > 100
+
+
+def test_continuous_move_gesture_reaches_saved_image_crops_and_prompt(overlay, tmp_path):
+    from PIL import Image
+
+    from arrow.capture.coordinate_mapper import CoordinateMapper, ScreenInfo
+    from arrow.capture.screenshot_service import ScreenshotService
+    from arrow.capture.session import CaptureSession
+    from arrow.context.orchestrator import AnchorResolution, ContextOrchestrator
+    from arrow.ui.notch import format_change_request
+
+    def loop(cx, cy, rx, ry):
+        return [(cx + rx * math.cos(i * math.pi / 24), cy + ry * math.sin(i * math.pi / 24))
+                for i in range(49)]
+
+    source_loop = loop(120, 220, 40, 30)
+    destination_loop = loop(600, 530, 50, 40)
+    sx, sy = source_loop[-1]
+    dx, dy = destination_loop[0]
+    points = source_loop + [(sx + (dx - sx) * i / 20, sy + (dy - sy) * i / 20)
+                            for i in range(1, 20)] + destination_loop
+    mouse(overlay, QEvent.Type.MouseButtonPress, *points[0])
+    for point in points[1:]:
+        mouse(overlay, QEvent.Type.MouseMove, *point)
+    mouse(overlay, QEvent.Type.MouseButtonRelease, *points[-1])
+    selection = capture(overlay)[0]
+    scene = [Annotation.model_validate(item) for item in selection["annotations"]]
+    assert [a.role for a in scene[:2]] == ["source", "destination"]
+    assert scene[0].geometry["width"] < 120
+    assert scene[1].geometry["width"] < 140
+
+    mapper = CoordinateMapper([ScreenInfo("desktop", (0, 0, 800, 800), 1)])
+    pipeline = ContextOrchestrator(screenshots_dir=str(tmp_path))
+    instruction = "yah wali chij Mujhe Yahan per chahie"
+    session = CaptureSession(annotations=scene, annotation_scene_frozen=True)
+    result = pipeline.run(
+        session, selection["source"], instruction,
+        raw_img=Image.new("RGB", (800, 800), (24, 24, 24)),
+        screen_info=mapper.screens[0], mapper=mapper,
+        resolved_anchors=(AnchorResolution(role="source", source="visual_fallback"),
+                          AnchorResolution(role="destination", source="visual_fallback")),
+    )
+
+    assert result.error is None
+    assert result.change_request["normalized_intent"] == "move_element"
+    assert result.change_request["clarification_required"] is False
+    for path in (result.annotated_path, result.source_path, result.destination_path):
+        assert path and os.path.isfile(path)
+    assert Image.open(result.source_path).width < 140
+    assert Image.open(result.destination_path).width < 160
+    saved = Image.open(result.annotated_path)
+    _, source_rect = mapper.virtual_rect_to_physical_rect(
+        *(scene[0].geometry[k] for k in ("x", "y", "width", "height"))
+    )
+    assert saved.getpixel((source_rect["x"], source_rect["y"] + source_rect["height"] // 2)) == (239, 68, 68)
+    prompt = format_change_request(result.change_request)
+    assert "**Intent:** Move element" in prompt
+    assert "1 Source" in prompt and "2 Destination" in prompt
+    assert instruction in prompt
+    # The reusable service renders exactly the same canonical exported scene.
+    assert ScreenshotService().render_annotations(
+        Image.new("RGB", (800, 800), (24, 24, 24)), scene, mapper
+    ).tobytes() == saved.tobytes()
 
 
 def test_hide_overlay_is_idempotent_and_empty_capture_has_no_annotation(overlay):

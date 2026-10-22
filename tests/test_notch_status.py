@@ -130,3 +130,128 @@ def test_format_change_request_empty():
 
     assert format_change_request({}) == ""
     assert format_change_request(None) == ""
+
+
+def test_legacy_generic_anchor_labels_prefer_resolved_element_names():
+    from arrow.ui.notch import format_change_request
+
+    text = format_change_request({
+        "normalized_intent": "move_element",
+        "source": {"label": "Current element", "element": {"name": "Buy"}},
+        "destination": {"label": "Move here", "element": {"text": "Checkout"}},
+    })
+
+    assert "**Source:** Buy" in text
+    assert "**Destination:** Checkout" in text
+
+
+def test_format_change_request_exposes_missing_destination_and_inferences():
+    from arrow.intent import CompilerInput, IntentCompiler
+    from arrow.ui.notch import format_change_request
+
+    instruction = "yah wali chij Mujhe Yahan per chahie"
+    cr = IntentCompiler().compile(CompilerInput(
+        raw_instruction=instruction,
+        annotations=[{"role": "source", "type": "rectangle", "label": "1 Source",
+                      "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}}],
+    )).to_dict()
+
+    text = format_change_request(cr)
+
+    assert "**Intent:** Move element" in text
+    assert f"**Instruction:** {instruction}" in text
+    assert "1 Source" in text
+    assert "2 Destination" not in text
+    assert "**Destination:**" in text
+    assert "not provided" in text.lower()
+    assert "**Clarification required:** Yes" in text
+    assert "before implementation" in text.lower()
+    assert "**Ambiguities:**" in text
+    assert "[blocking] destination" in text
+    assert "**Inferences (not confirmed facts):**" in text
+    assert "No repository file" in text
+
+
+def test_format_change_request_uses_canonical_markers_with_resolved_names():
+    from arrow.ui.notch import format_change_request
+
+    text = format_change_request({
+        "normalized_intent": "move_element",
+        "source": {"label": "1 Source", "screenshot_marker": "1 Source", "element": {"name": "Buy"},
+                   "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}},
+        "destination": {"label": "2 Destination", "screenshot_marker": "2 Destination", "element": {"text": "Checkout"},
+                        "geometry": {"x": 200, "y": 20, "width": 80, "height": 30}},
+        "clarification_required": False,
+    })
+
+    assert "**Source:** Buy" in text
+    assert "**Destination:** Checkout" in text
+    assert "1 Source" in text
+    assert "2 Destination" in text
+    assert "**Clarification required:** No" in text
+
+
+def test_format_change_request_does_not_claim_markers_for_context_only_anchors():
+    from arrow.ui.notch import format_change_request
+
+    text = format_change_request({
+        "normalized_intent": "move_element",
+        "source": {"element": {"name": "Buy"}},
+        "destination": {"element": {"text": "Checkout"}},
+    })
+
+    assert "1 Source" not in text
+    assert "2 Destination" not in text
+
+
+def test_format_change_request_does_not_claim_markers_for_legacy_geometry():
+    from arrow.ui.notch import format_change_request
+
+    text = format_change_request({
+        "normalized_intent": "move_element",
+        "source": {"label": "Current button", "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}},
+        "destination": {"label": "Here", "geometry": {"x": 200, "y": 20, "width": 80, "height": 30}},
+    })
+
+    assert "1 Source" not in text
+    assert "2 Destination" not in text
+
+
+def test_format_change_request_preserves_recorded_markers_with_resolved_labels():
+    from arrow.ui.notch import format_change_request
+
+    text = format_change_request({
+        "normalized_intent": "move_element",
+        "source": {"label": "Buy", "screenshot_marker": "1 Source"},
+        "destination": {"label": "Checkout", "screenshot_marker": "2 Destination"},
+    })
+
+    assert "**Source:** Buy" in text
+    assert "**Destination:** Checkout" in text
+    assert "1 Source" in text
+    assert "2 Destination" in text
+
+
+def test_format_change_request_does_not_treat_resolved_marker_name_as_marker_evidence():
+    from arrow.intent import CompilerInput, IntentCompiler
+    from arrow.ui.notch import format_change_request
+
+    req = IntentCompiler().compile(CompilerInput(raw_instruction="inspect this", source_context={"name": "1 Source"}))
+    text = format_change_request(req.to_dict())
+
+    assert "**Source:** 1 Source" in text
+    assert "marker in annotated screenshot" not in text.lower()
+
+
+def test_format_change_request_preserves_instruction_without_duplicate_summary():
+    from arrow.ui.notch import format_change_request
+
+    instruction = "please consider this"
+    text = format_change_request({
+        "normalized_intent": "unknown",
+        "summary": instruction,
+        "raw_user_request": instruction,
+    })
+
+    assert text.count(instruction) == 1
+    assert f"**Instruction:** {instruction}" in text

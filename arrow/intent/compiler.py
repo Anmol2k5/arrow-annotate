@@ -88,7 +88,8 @@ _FIX_VISUAL_WORDS = ("overflow", "overlap", "cut off", "misaligned", "glitch",
 _RESPONSIVE_WORDS = ("mobile", "responsive", "breakpoint", "tablet", "desktop layout",
                      "small screen")
 _INSPECT_WORDS = ("what is", "explain", "why", "how does", "inspect", "tell me about")
-_MOVE_WORDS = ("move", "drag", "relocate", "reposition", "put it")
+_MOVE_WORDS = ("move", "drag", "relocate", "reposition", "put it", "shift",
+               "le aao", "le jao", "ले आओ", "ले जाओ", "खिसकाओ", "स्थानांतरित")
 
 _REL_KEYWORDS = {
     "before": MoveRelationship.BEFORE,
@@ -136,7 +137,7 @@ class IntentCompiler:
             )
 
         # --- intent ------------------------------------------------------
-        intent, intent_evidence, intent_inferred = _classify_intent(lower, has_destination)
+        intent, intent_evidence, intent_inferred = _classify_intent(lower, has_destination, has_source)
         req.normalized_intent = intent
         req.evidence.extend(intent_evidence)
         if intent_inferred:
@@ -201,17 +202,24 @@ def _split_annotations(annotations: list[dict]):
 
 def _build_anchor(role: str, annotation: Optional[dict], context: dict, mapping: dict) -> Anchor:
     label = None
+    screenshot_marker = None
     geometry: dict = {}
     coord_space = None
     if annotation:
         label = annotation.get("label") or None
         geometry = annotation.get("geometry", {}) or {}
         coord_space = annotation.get("coordinateSpace")
-    if not label:
-        label = context.get("text") or context.get("name") or None
+        expected_marker = "1 Source" if role == "source" else "2 Destination"
+        if annotation.get("type") == "rectangle" and label == expected_marker and geometry:
+            screenshot_marker = expected_marker
+    generic_labels = {"source", "destination", "1 source", "2 destination", "selected region"}
+    if not label or label.strip().lower() in generic_labels:
+        label = (context.get("name") or context.get("text")
+                 or ("selected region" if geometry else label) or "selected element")
     return Anchor(
         role=role,
         label=label,
+        screenshot_marker=screenshot_marker,
         coordinate_space=coord_space,
         geometry=geometry,
         element=context or {},
@@ -248,12 +256,13 @@ def _has_any(text: str, words) -> bool:
 def _has_word(text: str, words) -> bool:
     """Whole-word match so e.g. 'move' does not match inside 'remove'."""
     for w in words:
-        if re.search(rf"\b{re.escape(w)}\b", text):
+        # Lookarounds also handle Hindi words ending in a combining vowel mark.
+        if re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text):
             return True
     return False
 
 
-def _classify_intent(text: str, has_destination: bool) -> tuple[Intent, list[str], bool]:
+def _classify_intent(text: str, has_destination: bool, has_source: bool) -> tuple[Intent, list[str], bool]:
     evidence: list[str] = []
     if not text:
         if has_destination:
@@ -285,6 +294,16 @@ def _classify_intent(text: str, has_destination: bool) -> tuple[Intent, list[str
         return Intent.FIX_INTERACTION, ["Instruction reports an interaction problem."], False
     if _has_any(text, _FIX_VISUAL_WORDS):
         return Intent.FIX_VISUAL_BUG, ["Instruction reports a visual bug."], False
+    # "This thing is wanted here" can imply a move when an existing source is
+    # selected. Desire words alone can also request an addition or style change.
+    source_phrase = re.search(
+        r"(?<!\w)(?:yah|yeh|ye|यह|ये)\s+(?:wali|wala|वाली|वाला)\s+"
+        r"(?:chij|cheej|cheez|chiz|चीज़|चीज)(?!\w)", text,
+    )
+    if (has_source and source_phrase
+            and _has_word(text, ("yahan", "yahaan", "wahan", "wahaan", "idhar", "udhar", "यहाँ", "यहां", "वहाँ", "वहां"))
+            and _has_word(text, ("chahiye", "chahie", "chahiyeh", "चाहिए"))):
+        return Intent.MOVE_ELEMENT, ["Selected source and spatial desire phrasing suggest a move."], True
     return Intent.UNKNOWN, ["Could not classify intent from instruction."], False
 
 
@@ -305,7 +324,8 @@ def _extract_changes(text: str, intent: Intent, req: ChangeRequest) -> list[Requ
     if intent == Intent.MOVE_ELEMENT:
         changes.append(RequestedChange(
             operation="move",
-            description="Move the source element to the destination location.",
+            description=("Move the source element to the destination location." if req.destination
+                         else "Clarify the destination before moving the source element."),
         ))
 
     # Resize can accompany a move (e.g. "move this here and make it wider").
@@ -425,11 +445,11 @@ def _constraints(text: str) -> list[str]:
 
 def _acceptance_criteria(intent: Intent, req: ChangeRequest) -> list[str]:
     criteria: list[str] = []
-    src_label = req.source.label if req.source else "the element"
-    dst_label = req.destination.label if req.destination else "the destination"
+    src_label = _anchor_description(req.source, "the element")
+    dst_label = _anchor_description(req.destination, "the destination")
 
     if intent == Intent.MOVE_ELEMENT:
-        criteria.append(f"{src_label} appears at {dst_label} after the change.")
+        criteria.append(f"After the change, {src_label} appears at {dst_label}.")
         criteria.append("No unrelated elements are visually displaced.")
     if any(c.operation == "resize" for c in req.requested_changes):
         criteria.append(f"{src_label} has the requested new size.")
@@ -494,12 +514,26 @@ def _likely_files(source_mapping: dict, destination_mapping: dict) -> list[Likel
 # Summary + finalization
 # ---------------------------------------------------------------------------
 
+def _anchor_description(anchor: Optional[Anchor], fallback: str) -> str:
+    if anchor is None:
+        return fallback
+    generic_labels = {"source", "destination", "1 source", "2 destination", "selected region", "selected element"}
+    if not anchor.label or anchor.label.strip().lower() in generic_labels:
+        expected_marker = "1 Source" if anchor.role == "source" else "2 Destination"
+        if anchor.screenshot_marker == expected_marker:
+            kind = "item" if anchor.role == "source" else "area"
+            return f"the {kind} marked {expected_marker}"
+    return anchor.label or fallback
+
+
 def _summary(intent: Intent, req: ChangeRequest, text: str) -> str:
     if intent == Intent.UNKNOWN:
         return text or "No actionable instruction was provided."
-    src = req.source.label if req.source else "the selected element"
+    src = _anchor_description(req.source, "the selected element")
     if intent == Intent.MOVE_ELEMENT:
-        dst = req.destination.label if req.destination else "the destination"
+        if req.destination is None:
+            return f"Move {src}; destination needs clarification."
+        dst = _anchor_description(req.destination, "the destination")
         base = f"Move {src} to {dst}"
         if any(c.operation == "resize" for c in req.requested_changes):
             base += " and resize it"
@@ -542,7 +576,8 @@ def _finalize(
     if intent == Intent.MOVE_ELEMENT and not has_destination:
         req.ambiguities.append(Ambiguity(
             field="destination",
-            description="Move intent detected but no destination was provided.",
+            description=("Move intent detected but no destination was provided. "
+                         "Mark the destination or describe the target before implementation."),
             severity="blocking",
         ))
 
@@ -615,7 +650,17 @@ def recompile_change_request(
         destination_mapping=(old.get("destination") or {}).get("source_mapping") or {},
         assets=old.get("assets") or {},
     )
-    return (compiler or IntentCompiler()).compile(data)
+    req = (compiler or IntentCompiler()).compile(data)
+    # Marker evidence survives instruction edits independently of the resolved
+    # element label; recompilation must not manufacture it from geometry.
+    for role, marker in (("source", "1 Source"), ("destination", "2 Destination")):
+        old_anchor = old.get(role) or {}
+        anchor = getattr(req, role)
+        if anchor and old_anchor.get("screenshot_marker") == marker:
+            anchor.screenshot_marker = marker
+    req.summary = _summary(req.normalized_intent, req, req.raw_user_request)
+    req.acceptance_criteria = _acceptance_criteria(req.normalized_intent, req)
+    return req
 
 
 __all__ = ["IntentCompiler", "CompilerInput", "recompile_change_request"]

@@ -2,11 +2,12 @@ import math
 import time
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from arrow.capture.session import Annotation, generate_uuidv7
+from arrow.capture.annotation_scene import build_annotation_scene
+from arrow.capture.session import Annotation
 
 # Role colors (mirror screenshot_service so the overlay matches the annotation)
 SOURCE_RGB = (239, 68, 68)       # Red
@@ -15,9 +16,6 @@ ACTIVE_RGB = (59, 130, 246)      # Neon Blue
 SOURCE_CORE = (255, 214, 214)
 DEST_CORE = (214, 255, 228)
 ACTIVE_CORE = (219, 234, 254)    # Light Blue
-
-MARKER_LABELS = {"source": "Current", "destination": "Move here"}
-
 
 class StrokePoint:
     __slots__ = ("point", "timestamp")
@@ -115,6 +113,8 @@ class SelectionOverlay(QWidget):
         self._current_stroke: Optional[Stroke] = None
         self._is_drawing = False
         self._active = False
+        self._scene_key: Optional[tuple] = None
+        self._scene: List[Annotation] = []
 
         self._fade_timer = QTimer(self)
         self._fade_timer.timeout.connect(self._update_fade)
@@ -178,6 +178,8 @@ class SelectionOverlay(QWidget):
         self._update_geometry()
         self._active = True
         self._strokes.clear()
+        self._scene_key = None
+        self._scene = []
         self._current_stroke = None
         self._is_drawing = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -202,21 +204,33 @@ class SelectionOverlay(QWidget):
             "x": geom.x(), "y": geom.y(), "width": geom.width(), "height": geom.height(),
             "source": None, "annotations": [],
         }
-        for order, stroke in enumerate(self._strokes, start=1):
-            if not stroke.locked or not stroke.points:
-                continue
-            bounds = stroke_rect([p.point for p in stroke.points], self._offset, pad=8)
-            points = [{"x": p.point.x() + self._offset.x(),
-                       "y": p.point.y() + self._offset.y()} for p in stroke.points]
-            annotation = Annotation(
-                id=generate_uuidv7(), type="freehand", role=stroke.role,
-                geometry={**bounds, "points": points}, order=order,
-            )
-            result["annotations"].append(annotation.model_dump())
-            result[stroke.role] = bounds
-            if stroke.role == "source":
-                result.update(bounds)
+        scene = self._annotation_scene()
+        result["annotations"] = [annotation.model_dump() for annotation in scene]
+        for annotation in scene:
+            if annotation.type == "rectangle" and annotation.role in ("source", "destination"):
+                result[annotation.role] = dict(annotation.geometry)
+                if annotation.role == "source":
+                    result.update(annotation.geometry)
         self.selection_complete.emit(OverlaySelectionResult(result))
+
+    def _annotation_scene(self) -> List[Annotation]:
+        """Use one scene for both the live decorations and the exported image.
+
+        Locked strokes are immutable, so loop detection only runs when the
+        completed drawing changes, rather than on every animation frame.
+        """
+        locked = [s for s in self._strokes if s.locked and s.points]
+        key = (self._offset.x(), self._offset.y(),
+               tuple((id(s), s.role, len(s.points)) for s in locked))
+        if key != self._scene_key:
+            self._scene = build_annotation_scene([
+                {"role": stroke.role,
+                 "points": [{"x": p.point.x() + self._offset.x(),
+                             "y": p.point.y() + self._offset.y()} for p in stroke.points]}
+                for stroke in locked
+            ])
+            self._scene_key = key
+        return self._scene
 
     @pyqtSlot()
     def cancel_overlay(self):
@@ -225,6 +239,8 @@ class SelectionOverlay(QWidget):
         self._is_drawing = False
         self._current_stroke = None
         self._strokes.clear()
+        self._scene_key = None
+        self._scene = []
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.hide()
 
@@ -234,6 +250,7 @@ class SelectionOverlay(QWidget):
             if self._current_stroke.points:
                 self._current_stroke.locked = True
                 self._strokes.append(self._current_stroke)
+                self._scene_key = None
             self._current_stroke = None
 
     # ------------------------------------------------------------------
@@ -251,6 +268,7 @@ class SelectionOverlay(QWidget):
             # A new stroke replaces an earlier stroke of the same role
             # (e.g. re-drawing the destination) but never deletes the other.
             self._strokes = [s for s in self._strokes if s.role != role]
+            self._scene_key = None
             self._current_stroke = Stroke(role)
             self._current_stroke.points = [StrokePoint(event.globalPosition() - self._offset)]
             self.update()
@@ -448,46 +466,38 @@ class SelectionOverlay(QWidget):
     # Markers + arrow
     # ------------------------------------------------------------------
 
-    def _draw_marker(self, painter: QPainter, stroke: Stroke, rgb: Tuple[int, int, int]):
-        if not stroke.points:
-            return
-        center = stroke.points[0].point
-        radius = 13.0
-        number = "1" if stroke.role == "source" else "2"
+    def _draw_region(self, painter: QPainter, annotation: Annotation):
+        bounds = annotation.geometry
+        rect = QRectF(bounds["x"] - self._offset.x(), bounds["y"] - self._offset.y(),
+                      bounds["width"], bounds["height"])
+        rgb = SOURCE_RGB if annotation.role == "source" else DEST_RGB
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(*rgb), 3))
+        painter.drawRect(rect)
 
-        painter.setBrush(QColor(9, 9, 11, 220))
-        painter.setPen(QPen(QColor(*rgb), 2.5))
-        painter.drawEllipse(center, radius, radius)
-
-        painter.setPen(QPen(QColor(255, 255, 255), 1))
         font = QFont()
         font.setBold(True)
-        font.setPointSize(11)
+        font.setPointSize(10)
         painter.setFont(font)
-        painter.drawText(
-            QPointF(center.x() - 4, center.y() + 4),
-            number,
-        )
-
-        # Label under the marker
-        label = MARKER_LABELS.get(stroke.role, "")
-        if label:
-            font2 = QFont()
-            font2.setPointSize(9)
-            font2.setBold(True)
-            painter.setFont(font2)
-            lx = center.x()
-            ly = center.y() + radius + 14
-            painter.setPen(QPen(QColor(255, 255, 255, 235), 1))
-            painter.drawText(QPointF(lx - 30, ly), label)
+        metrics = painter.fontMetrics()
+        label_width = metrics.horizontalAdvance(annotation.label) + 14
+        label_height = metrics.height() + 8
+        left = max(0.0, min(rect.left(), self.width() - label_width))
+        top = max(0.0, min(rect.top() - label_height, self.height() - label_height))
+        label_rect = QRectF(left, top, label_width, label_height)
+        painter.setBrush(QColor(9, 9, 11, 240))
+        painter.setPen(QPen(QColor(*rgb), 1.5))
+        painter.drawRoundedRect(label_rect, 5, 5)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, annotation.label)
 
     def _draw_arrow(self, painter: QPainter, start: QPointF, end: QPointF):
         # Glow + core line
-        painter.setPen(QPen(QColor(255, 255, 255, 28), 14,
+        painter.setPen(QPen(QColor(167, 139, 250, 45), 14,
                             Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                             Qt.PenJoinStyle.RoundJoin))
         painter.drawLine(start, end)
-        painter.setPen(QPen(QColor(230, 230, 250, 230), 3.5,
+        painter.setPen(QPen(QColor(167, 139, 250, 255), 4,
                             Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                             Qt.PenJoinStyle.RoundJoin))
         painter.drawLine(start, end)
@@ -500,7 +510,7 @@ class SelectionOverlay(QWidget):
                      end.y() - arrow_len * math.sin(angle - arrow_angle))
         p2 = QPointF(end.x() - arrow_len * math.cos(angle + arrow_angle),
                      end.y() - arrow_len * math.sin(angle + arrow_angle))
-        painter.setBrush(QColor(230, 230, 250, 235))
+        painter.setBrush(QColor(167, 139, 250, 255))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPolygon([end, p1, p2])
 
@@ -532,17 +542,16 @@ class SelectionOverlay(QWidget):
             core = SOURCE_CORE if s.role == "source" else DEST_CORE
             trail = self._build_trail(s.points, now, trail_seconds=1e9)
             self._stroke_trail(painter, trail, rgb, core)
-            self._draw_marker(painter, s, rgb)
 
-        # Connecting arrow: source → destination.
-        if len(locked) >= 2:
-            src = next((s for s in locked if s.role == "source"), None)
-            dst = next((s for s in locked if s.role == "destination"), None)
-            if src is not None and dst is not None:
-                c1 = stroke_center([p.point for p in src.points])
-                c2 = stroke_center([p.point for p in dst.points])
-                if c1 is not None and c2 is not None:
-                    self._draw_arrow(painter, c1, c2)
+        # The same numbered boxes and arrow are also saved in the PNG.
+        for annotation in self._annotation_scene():
+            if annotation.type == "rectangle":
+                self._draw_region(painter, annotation)
+            elif annotation.type == "arrow":
+                geometry = annotation.geometry
+                start = QPointF(geometry["x1"], geometry["y1"]) - self._offset
+                end = QPointF(geometry["x2"], geometry["y2"]) - self._offset
+                self._draw_arrow(painter, start, end)
 
         # Keep the complete live annotation visible, with an animated pointer.
         if self._current_stroke is not None and len(self._current_stroke.points) >= 2:

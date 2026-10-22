@@ -287,14 +287,18 @@ def _anchor_label(anchor: dict) -> str:
     if not anchor:
         return ""
     label = anchor.get("label")
-    if label:
+    generic_labels = {"source", "destination", "1 source", "2 destination", "selected region",
+                      "current element", "move here"}
+    if label and label.strip().lower() not in generic_labels:
         return label
     element = anchor.get("element") or {}
     return (
         element.get("name")
         or element.get("text")
+        or element.get("selector")
         or anchor.get("selector")
         or (anchor.get("geometry") and "selected region")
+        or label
         or ""
     )
 
@@ -305,23 +309,35 @@ def format_change_request(cr: dict) -> str:
         return ""
     intent = INTENT_LABELS.get(cr.get("normalized_intent", ""), cr.get("normalized_intent", "unknown"))
 
-    lines = ["## Arrow change request"]
+    lines = ["## Arrow change request", ""]
     lines.append(f"**Intent:** {intent}")
-    if cr.get("summary"):
+    if cr.get("summary") and cr["summary"].strip() != (cr.get("raw_user_request") or "").strip():
         lines.append(f"**Summary:** {cr['summary']}")
     if cr.get("raw_user_request"):
         lines.append(f"**Instruction:** {cr['raw_user_request']}")
 
-    src_label = _anchor_label(cr.get("source") or {})
-    dst_label = _anchor_label(cr.get("destination") or {})
+    source = cr.get("source") or {}
+    destination = cr.get("destination") or {}
+    src_label = _anchor_label(source)
+    dst_label = _anchor_label(destination)
     if src_label:
         lines.append(f"**Source:** {src_label}")
+        if source.get("screenshot_marker") == "1 Source":
+            lines.append("**Source marker in annotated screenshot:** 1 Source")
     if dst_label:
         lines.append(f"**Destination:** {dst_label}")
+        if destination.get("screenshot_marker") == "2 Destination":
+            lines.append("**Destination marker in annotated screenshot:** 2 Destination")
+    elif cr.get("normalized_intent") == "move_element":
+        lines.append("**Destination:** Not provided; mark or describe the target.")
     if cr.get("move_relationship"):
         lines.append(f"**Move relationship:** {cr['move_relationship']}")
     if cr.get("confidence") is not None:
         lines.append(f"**Confidence:** {round(cr['confidence'], 2)}")
+    clarification_required = cr.get("clarification_required", False)
+    lines.append(f"**Clarification required:** {'Yes' if clarification_required else 'No'}")
+    if clarification_required:
+        lines.append("Clarification required before implementation.")
 
     files = cr.get("likely_files") or []
     if files:
@@ -331,14 +347,28 @@ def format_change_request(cr: dict) -> str:
             loc += f":{f['source_line']}"
         lines.append(f"**Likely file:** {loc}")
 
-    for op in (cr.get("requested_changes") or []):
-        lines.append(f"- {op.get('description', '')}")
+    if cr.get("requested_changes"):
+        lines.extend(["", "**Requested changes:**", ""])
+        for op in cr["requested_changes"]:
+            inferred = " (inferred)" if op.get("inferred") else ""
+            lines.append(f"- {op.get('description', '')}{inferred}")
 
     for title, key in (("Acceptance criteria", "acceptance_criteria"), ("Constraints", "constraints")):
         items = cr.get(key) or []
         if items:
-            lines.append(f"**{title}:**")
+            lines.extend(["", f"**{title}:**", ""])
             lines.extend(f"- {c}" for c in items)
+
+    if cr.get("ambiguities"):
+        lines.extend(["", "**Ambiguities:**", ""])
+        for ambiguity in cr["ambiguities"]:
+            lines.append(f"- [{ambiguity.get('severity', 'warning')}] {ambiguity.get('field', '')}: "
+                         f"{ambiguity.get('description', '')}")
+
+    if cr.get("inferences"):
+        lines.extend(["", "**Inferences (not confirmed facts):**", ""])
+        for inference in cr["inferences"]:
+            lines.append(f"- {inference.get('field', '')}: {inference.get('reason', '')}")
 
     return "\n".join(lines)
 

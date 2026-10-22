@@ -15,6 +15,9 @@ def _anchor_block(title: str, anchor: Anchor | None) -> list[str]:
     if anchor is None:
         return [f"**{title}:** (none)"]
     lines = [f"**{title}:** {anchor.label or '(unlabeled)'}"]
+    marker = "1 Source" if anchor.role == "source" else "2 Destination"
+    if anchor.screenshot_marker == marker:
+        lines.append(f"- Marker in annotated screenshot: **{marker}**")
     element = anchor.element or {}
     selector = element.get("selector")
     if selector:
@@ -37,7 +40,7 @@ def build_markdown(req: ChangeRequest) -> str:
     lines: list[str] = []
     lines.append(f"# Arrow change request — {req.normalized_intent.value}")
     lines.append("")
-    if req.summary:
+    if req.summary and req.summary.strip() != req.raw_user_request.strip():
         lines.append(f"**Summary:** {req.summary}")
         lines.append("")
     if req.raw_user_request:
@@ -46,6 +49,7 @@ def build_markdown(req: ChangeRequest) -> str:
 
     lines.append(f"**Application mode:** {req.application_mode}")
     lines.append(f"**Overall confidence:** {req.confidence:.2f}")
+    lines.append(f"**Clarification required:** {'Yes' if req.clarification_required else 'No'}")
     if req.clarification_required:
         lines.append("")
         lines.append("> Clarification required before implementation.")

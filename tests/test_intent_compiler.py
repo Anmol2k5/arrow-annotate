@@ -1,3 +1,5 @@
+import pytest
+
 from arrow.intent import (
     ChangeRequest,
     CompilerInput,
@@ -50,6 +52,182 @@ def test_move_without_destination_requires_clarification():
     assert req.normalized_intent == Intent.MOVE_ELEMENT
     assert req.clarification_required is True
     assert any(a.field == "destination" and a.severity == "blocking" for a in req.ambiguities)
+
+
+@pytest.mark.parametrize("instruction", [
+    "yah wali chij Mujhe Yahan per chahie",
+    "yeh wali cheez mujhe yahaan chahiye",
+    "यह वाली चीज मुझे यहाँ चाहिए",
+])
+def test_spatial_desire_with_selected_source_infers_move_and_requires_destination(instruction):
+    req = _compile(
+        raw_instruction=instruction,
+        annotations=[{"role": "source", "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}}],
+    )
+
+    assert req.normalized_intent == Intent.MOVE_ELEMENT
+    assert req.raw_user_request == instruction
+    assert req.clarification_required is True
+    assert req.destination is None
+    assert req.source.label == "selected region"
+    assert any(a.field == "destination" and a.severity == "blocking" for a in req.ambiguities)
+    assert any(i.field == "normalized_intent" for i in req.inferences)
+    assert "clarif" in req.summary.lower()
+    assert "None" not in req.summary
+    assert req.source.element == {}
+    assert req.likely_files == []
+
+
+@pytest.mark.parametrize("instruction", ["isko yahan le aao", "इसे यहाँ ले आओ"])
+def test_explicit_hindi_move_requires_destination(instruction):
+    req = _compile(raw_instruction=instruction, annotations=[{"role": "source", "label": "button"}])
+
+    assert req.normalized_intent == Intent.MOVE_ELEMENT
+    assert req.clarification_required is True
+    assert any(a.field == "destination" and a.severity == "blocking" for a in req.ambiguities)
+
+
+@pytest.mark.parametrize("instruction, expected", [
+    ("mujhe blue color chahiye", Intent.RESTYLE_ELEMENT),
+    ("add button yahan chahiye", Intent.ADD_ELEMENT),
+    ("mujhe yahan chahiye", Intent.UNKNOWN),
+    ("yah wali chij chahiye", Intent.UNKNOWN),
+])
+def test_desire_word_alone_does_not_infer_move(instruction, expected):
+    req = _compile(raw_instruction=instruction, annotations=[{"role": "source", "label": "card"}])
+
+    assert req.normalized_intent == expected
+
+
+def test_generic_source_label_does_not_hide_resolved_element_name():
+    req = _compile(
+        raw_instruction="move this here",
+        annotations=[{"role": "source", "label": "Source"}, {"role": "destination", "label": "Destination"}],
+        source_context={"name": "Buy now", "tagName": "BUTTON"},
+        destination_context={"text": "Checkout", "tagName": "SECTION"},
+    )
+
+    assert req.source.label == "Buy now"
+    assert req.destination.label == "Checkout"
+
+
+def test_markdown_preserves_unknown_instruction_without_duplicate_summary():
+    instruction = "please consider this"
+    req = _compile(raw_instruction=instruction, annotations=[{"role": "source", "label": "card"}])
+
+    assert build_markdown(req).count(instruction) == 1
+
+
+def test_markdown_includes_canonical_screenshot_marker_references():
+    req = _compile(
+        raw_instruction="move this here",
+        annotations=[
+            {"role": "source", "type": "rectangle", "label": "1 Source",
+             "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}},
+            {"role": "destination", "type": "rectangle", "label": "2 Destination",
+             "geometry": {"x": 200, "y": 20, "width": 80, "height": 30}},
+        ],
+        source_context={"name": "Buy"},
+        destination_context={"name": "Checkout"},
+    )
+
+    assert req.source.model_dump().get("screenshot_marker") == "1 Source"
+    assert req.destination.model_dump().get("screenshot_marker") == "2 Destination"
+    assert req.summary == "Move Buy to Checkout."
+    markdown = build_markdown(req)
+    assert "1 Source" in markdown
+    assert "2 Destination" in markdown
+
+
+def test_summary_and_acceptance_identify_unresolved_items_by_recorded_marker():
+    req = _compile(
+        raw_instruction="yah wali chij Mujhe Yahan per chahie",
+        annotations=[
+            {"role": "source", "type": "rectangle", "label": "1 Source",
+             "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}},
+            {"role": "destination", "type": "rectangle", "label": "2 Destination",
+             "geometry": {"x": 200, "y": 20, "width": 80, "height": 30}},
+        ],
+    )
+
+    assert req.summary == "Move the item marked 1 Source to the area marked 2 Destination."
+    assert any("the item marked 1 Source" in criterion and "the area marked 2 Destination" in criterion
+               for criterion in req.acceptance_criteria)
+    assert "selected region" not in req.summary
+
+
+@pytest.mark.parametrize("annotation_type, label", [
+    ("freehand", "selected region"),
+    ("rectangle", "Current button"),
+    ("freehand", "1 Source"),
+])
+def test_legacy_annotation_geometry_does_not_imply_screenshot_marker(annotation_type, label):
+    req = _compile(
+        raw_instruction="move this",
+        annotations=[{"role": "source", "type": annotation_type, "label": label,
+                      "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}}],
+    )
+
+    assert req.source.model_dump().get("screenshot_marker") is None
+    assert "Marker in annotated screenshot" not in build_markdown(req)
+
+
+def test_recompile_preserves_screenshot_marker_with_resolved_name():
+    from arrow.intent.compiler import recompile_change_request
+
+    old = _compile(
+        raw_instruction="move this",
+        annotations=[{"role": "source", "type": "rectangle", "label": "1 Source",
+                      "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}}],
+        source_context={"name": "Buy"},
+    )
+    edited = recompile_change_request(old.to_dict(), "move this button here")
+
+    assert edited.source.model_dump().get("screenshot_marker") == "1 Source"
+    assert edited.source.label == "Buy"
+    assert "1 Source" in build_markdown(edited)
+
+
+def test_context_name_matching_marker_does_not_claim_a_screenshot_marker():
+    req = _compile(raw_instruction="inspect this", source_context={"name": "1 Source"})
+
+    assert req.source.label == "1 Source"
+    assert req.source.screenshot_marker is None
+    assert "Marker in annotated screenshot" not in build_markdown(req)
+
+
+def test_recompile_does_not_upgrade_canonical_label_to_marker_evidence():
+    from arrow.intent.compiler import recompile_change_request
+
+    edited = recompile_change_request({
+        "source": {"label": "1 Source", "element": {"name": "1 Source"},
+                   "geometry": {"x": 10, "y": 20, "width": 80, "height": 30}},
+    }, "inspect this")
+
+    assert edited.source.label == "1 Source"
+    assert edited.source.screenshot_marker is None
+    assert "Marker in annotated screenshot" not in build_markdown(edited)
+
+
+def test_empty_semantic_rectangle_does_not_record_screenshot_marker():
+    req = _compile(
+        raw_instruction="inspect this",
+        annotations=[{"role": "source", "type": "rectangle", "label": "1 Source", "geometry": {}}],
+    )
+
+    assert req.source.screenshot_marker is None
+
+
+def test_markdown_does_not_claim_markers_for_context_only_anchors():
+    req = _compile(
+        raw_instruction="move this here",
+        source_context={"name": "Buy"},
+        destination_context={"name": "Checkout"},
+    )
+
+    markdown = build_markdown(req)
+    assert "1 Source" not in markdown
+    assert "2 Destination" not in markdown
 
 
 def test_explicit_relationship_keyword_priority():

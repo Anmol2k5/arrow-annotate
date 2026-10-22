@@ -54,6 +54,7 @@ class Anchor(BaseModel):
 
     role: str  # "source" | "destination"
     label: Optional[str] = None
+    screenshot_marker: Optional[str] = None  # Recorded label of a semantic screenshot rectangle.
     coordinate_space: Optional[str] = None
     geometry: dict = Field(default_factory=dict)
     element: dict = Field(default_factory=dict)  # DOM/native element context summary
