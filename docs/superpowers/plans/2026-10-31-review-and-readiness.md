@@ -41,10 +41,12 @@
 - [x] Add guided local diagnostics with real device/display information and explicit optional checks.
 - [x] Cover hardware-free boundaries in unit tests and document interactive acceptance steps.
 - [x] Push verified changes and inspect native Windows build.
-- [ ] Publish the verified version tag and confirm public release downloads.
+- [x] Publish the verified version tag and confirm public release downloads.
 
 Local verification: 621 Python tests passed, one native clipboard test skipped on Linux; four browser tests passed. Ruff and mypy passed. Independent review found export duplication, stale latest-file mirror and missing-image completion; each is fixed and regression-tested. Review/settings UI rendered and visually inspected.
 
 Actual microphone/Hinglish, multi-monitor/DPI, desktop startup and authenticated agent task results remain unverified: this host is Linux. The new diagnostic command reports unsupported here, with no false hardware passes. A real model-download attempt failed at the cloud proxy; local recognition is not claimed tested. Signing identity is not available, so release artifacts are unsigned and signing support is prepared.
 
 Native Windows workflow [41227044772](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41227044772) passed source tests, native PNG clipboard test, frozen-app/MCP smoke checks and install/uninstall/data preservation. Initial Windows test assumptions were corrected (explicit UTF-8 reads and case-insensitive environment aliases). A live synthetic Codex session was attempted on Linux but failed during startup because the CLI state directory is read-only; no successful agent session is claimed. Claude Code is absent in this cloud.
+
+Release verification: [v0.4.0](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.0) is public. Tag workflow [41227617422](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41227617422) passed native build/install checks, final SHA256 verification and publication. The public release page returned HTTP 200 and lists Setup, portable ZIP, hashes and provenance. The release is explicitly unsigned. This publication does not change the pending interactive hardware/account validation status above.
