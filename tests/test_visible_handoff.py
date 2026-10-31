@@ -64,3 +64,11 @@ def test_gallery_refresh_preserves_copy_and_handoff_state(tmp_path, monkeypatch)
     assert not card._provider_buttons['send'].isEnabled()
     gallery.close()
     app.processEvents()
+
+
+def test_mcp_child_reads_the_same_database_as_source_desktop(tmp_path, monkeypatch):
+    from arrow.storage import database
+    db = tmp_path / 'source-checkout' / 'arrow.db'
+    monkeypatch.setattr(database, 'DB_PATH', str(db))
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path / 'different-user-home'))
+    assert handoff.mcp_server_config()['env']['ARROW_DB_PATH'] == str(db)

@@ -44,7 +44,9 @@ def mcp_server_config():
         command, args = str(executable), ['--mcp']
     else:
         command, args = sys.executable, [str(Path(__file__).resolve().parents[2] / 'main.py'), '--mcp']
-    return {'command': command, 'args': args, 'env': {'ARROW_HOME': str(application_home())}}
+    from arrow.storage.database import DB_PATH
+    return {'command': command, 'args': args, 'env': {
+        'ARROW_HOME': str(application_home()), 'ARROW_DB_PATH': str(Path(DB_PATH).resolve())}}
 
 
 def handoff_capture(capture_id, name, db_path=None):
