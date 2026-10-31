@@ -66,7 +66,7 @@ def handoff_capture(capture_id, name, db_path=None):
         if not provider.detect():
             raise RuntimeError(f'{name} CLI is not installed. Open Settings → Agents.')
         if name == 'Codex':
-            command = ['codex', '--cd', repo]
+            command = ['codex', '--sandbox', 'workspace-write', '--cd', repo]
             for key, value in config.items():
                 command.extend(['-c', f'mcp_servers.arrow.{key}={json.dumps(value, ensure_ascii=False)}'] if key != 'env'
                                else ['-c', 'mcp_servers.arrow.env=' + '{' + ','.join(
@@ -74,7 +74,7 @@ def handoff_capture(capture_id, name, db_path=None):
             if bundle.annotated_path:
                 command.extend(['--image', bundle.annotated_path])
         else:
-            command = ['claude', '--mcp-config', json.dumps({'mcpServers': {'arrow': config}}, ensure_ascii=False),
+            command = ['claude', '--permission-mode', 'default', '--mcp-config', json.dumps({'mcpServers': {'arrow': config}}, ensure_ascii=False),
                        '--add-dir', bundle.directory]
         command.extend(['--', prompt])
         subprocess.Popen(provider._resolve_command(command), cwd=repo, shell=False,
