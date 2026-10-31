@@ -1,5 +1,6 @@
 """Settings and CLI connection controls embedded in the notch."""
 
+import json
 import logging
 import os
 import threading
@@ -7,6 +8,7 @@ import threading
 from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -32,6 +34,7 @@ class SettingsPanel(QWidget):
     preferences_changed = pyqtSignal()
     agents_checked = pyqtSignal(object)
     agent_check_failed = pyqtSignal(str)
+    voice_model_finished = pyqtSignal(str)
 
     def __init__(self, save_capture, parent=None):
         super().__init__(parent)
@@ -98,6 +101,7 @@ class SettingsPanel(QWidget):
             self.pages.addWidget(scroll)
         self.agents_checked.connect(self._apply_agent_statuses)
         self.agent_check_failed.connect(self._show_agent_check_failure)
+        self.voice_model_finished.connect(self._voice_model_complete)
         self._login_timer = QTimer(self)
         self._login_timer.setInterval(1000)
         self._login_timer.timeout.connect(self._poll_logins)
@@ -147,6 +151,39 @@ class SettingsPanel(QWidget):
         card.addLayout(buttons)
         self.capture_status = self._label('')
         card.addWidget(self.capture_status)
+        voice = self._card(layout, 'On-device voice',
+                           'Audio is transcribed locally using Whisper. Download the multilingual model once '
+                           '(about 150 MB); recording and recognition never upload audio. You can also type in the overlay.')
+        from arrow.speech.offline import voice_model_ready
+        self.voice_model_status = self._label('Model installed · ready for offline use' if voice_model_ready()
+                                              else 'Voice model not installed. Typed captures work without it.')
+        voice.addWidget(self.voice_model_status)
+        self.voice_model_button = QPushButton('Repair voice model' if voice_model_ready() else 'Download voice model')
+        self.voice_model_button.clicked.connect(self._install_voice_model)
+        voice.addWidget(self.voice_model_button)
+
+    def _install_voice_model(self):
+        self.voice_model_button.setEnabled(False)
+        self.voice_model_status.setText('Downloading public model files… No recordings are sent. You can keep using typed captures.')
+
+        def install():
+            from arrow.speech.offline import install_voice_model
+            try:
+                install_voice_model(force=True)
+                message = 'Model installed · ready for offline voice'
+            except Exception as error:
+                message = f'Model setup failed: {error}. Retry or use typed captures.'
+            try:
+                self.voice_model_finished.emit(message)
+            except RuntimeError:
+                pass
+        threading.Thread(target=install, daemon=True).start()
+
+    def _voice_model_complete(self, message):
+        from arrow.speech.offline import voice_model_ready
+        self.voice_model_button.setText('Repair voice model' if voice_model_ready() else 'Download voice model')
+        self.voice_model_button.setEnabled(True)
+        self.voice_model_status.setText(message)
 
     def _restore_capture_defaults(self):
         self.shortcut_input.setText(settings.DEFAULT_CAPTURE_SHORTCUT)
@@ -197,6 +234,39 @@ class SettingsPanel(QWidget):
         card.addLayout(buttons)
         self.repository_status = self._label('')
         card.addWidget(self.repository_status)
+
+        card = self._card(layout, 'Local MCP and REST',
+                          'Connect another compatible agent to Arrow on this device. '
+                          'Keep Arrow running. Connection settings include a local access token, not a cloud API key.')
+        self.endpoint_status = self._label('')
+        card.addWidget(self.endpoint_status)
+        self.copy_mcp_button = QPushButton('Copy MCP connection JSON')
+        self.copy_mcp_button.clicked.connect(self._copy_mcp_connection)
+        card.addWidget(self.copy_mcp_button)
+
+    def _refresh_endpoint(self):
+        server = getattr(self.window(), '_server', None)
+        active = server is not None and getattr(server, '_running', False)
+        self.copy_mcp_button.setEnabled(active)
+        self.endpoint_status.setText(
+            f'MCP: {server.base_url}/mcp\nREST: {server.base_url}/api/captures' if active
+            else 'Local server is unavailable. Restart Arrow to reconnect.')
+        return server if active else None
+
+    def _copy_mcp_connection(self):
+        server = self._refresh_endpoint()
+        if server is None:
+            return
+        from arrow.server.server import app
+        try:
+            token = app.config['TOKEN_MANAGER'].get_or_create()
+            config = {'mcpServers': {'arrow': {'type': 'http', 'url': server.base_url + '/mcp',
+                                             'headers': {'Authorization': 'Bearer ' + token}}}}
+            QApplication.clipboard().setText(json.dumps(config, indent=2))
+            self.endpoint_status.setText('Connection JSON copied. Add it to your MCP client configuration. '
+                                         'Only share it with local clients you want to grant access.')
+        except OSError as error:
+            self.endpoint_status.setText(f'Could not read local connection settings: {error}')
 
     def _open_install_guide(self, name):
         from arrow.providers.setup import get_provider_install_url
@@ -342,4 +412,5 @@ class SettingsPanel(QWidget):
         for title, button in self.tab_buttons.items():
             button.setChecked(title == name)
         if name == 'Agents':
+            self._refresh_endpoint()
             self.refresh_agents()

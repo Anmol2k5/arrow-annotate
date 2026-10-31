@@ -23,6 +23,7 @@ from arrow.storage.repository import Repository
 log = logging.getLogger("arrow.mcp.server")
 
 PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_VERSIONS = {PROTOCOL_VERSION, "2025-03-26", "2025-06-18", "2025-11-25"}
 SERVER_INFO = {"name": "arrow-mcp", "version": "1.0.0"}
 
 
@@ -51,8 +52,11 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
         return _error(request_id, -32602, "Invalid params: expected an object")
 
     if method == "initialize":
+        requested_version = params.get('protocolVersion')
+        if requested_version is not None and not isinstance(requested_version, str):
+            return _error(request_id, -32602, 'protocolVersion must be a string')
         return _result(request_id, {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": requested_version if requested_version in SUPPORTED_VERSIONS else PROTOCOL_VERSION,
             "capabilities": {"tools": {}, "resources": {}},
             "serverInfo": SERVER_INFO,
         })

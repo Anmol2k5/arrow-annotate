@@ -1,7 +1,7 @@
 # Arrow architecture — 2026-10-31
 
 Arrow is a Windows PyQt desktop application, a local capture database, a browser
-extension and an MCP stdio server. It is not an embedded copy of Codex or Claude.
+extension and MCP stdio/HTTP transports. It is not an embedded copy of Codex or Claude.
 
 ## Runtime flow
 
@@ -15,6 +15,9 @@ coordinator binds results to capture IDs and discards cancelled/stale results.
 The orchestrator collects observed element/repository evidence, renders the
 scene and crops, compiles an instruction, writes PNG files and commits SQLite
 records. Speech, original drawing points and coordinate metadata are retained.
+An overlay text field can supply the instruction without microphone/transcription.
+Speech uses local CPU/int8 faster-whisper with explicitly installed base-model
+files; missing weights never trigger a network request or cloud fallback.
 
 ## File map
 
@@ -22,7 +25,7 @@ records. Speech, original drawing points and coordinate metadata are retained.
 - `arrow/core`: hotkey hooks, resource/data paths and logging.
 - `arrow/capture`: session state, drawing geometry, virtual-display composition,
   annotated PNGs, crop generation and latest-file convenience mirror.
-- `arrow/context`: DOM/native evidence, repository/source mapping, orchestration
+- `arrow/context`: frozen owner-window/UIA text, DOM/native evidence, repository/source mapping, orchestration
   and revisioned capture bundles.
 - `arrow/intent`: conservative instruction classification, anchors, ambiguities
   and readable/structured requests. Missing evidence remains unknown.
@@ -33,8 +36,10 @@ records. Speech, original drawing points and coordinate metadata are retained.
   client handoff. Authentication remains with the official client.
 - `arrow/mcp`: tools, resources and JSON-RPC transport. The bundle tool returns
   both complete text context and a stored annotated image, not a fresh screenshot.
+- `arrow/speech`: explicit model installation and local-only recognition.
 - `arrow/server`, `browser_extension`: authenticated loopback HTTP/WebSocket
-  utilities and DOM inspection. These are distinct from MCP stdio transport.
+  utilities and DOM inspection. `/mcp` and `/api/captures` share this HTTP server
+  and its local authorization token. Stdio works independently of the GUI service.
 - `packaging`, `scripts`, `.github/workflows`: Windows executable/installer build,
   provenance, native clipboard checks and install/uninstall smoke checks.
 - `tests`: regression coverage for these boundaries; native Windows tests require Windows.
@@ -63,8 +68,13 @@ The cloud environment could not access `lite.supamaus.com` (proxy HTTP 403), and
 no Heyclick folder was supplied. This is an independent Windows implementation;
 exact parity with that reference has not been verified.
 
-The native rich UIA resolver is not fully connected to the normal capture path,
-and browser DOM ownership across overlapping windows needs further validation.
+At release Arrow hides its windows and samples each anchor's actual native owner.
+A worker reads that frozen handle's accessible text with character/node/time
+budgets, skips password controls, and records extraction status. Native ownership
+and browser page-title checks reject obvious wrong-tab evidence. UIA providers can
+block individual calls or omit text; browser windows with identical titles still
+require interactive validation. These checks do not establish exact window IDs
+between the browser extension and Windows.
 The latest-file mirror is a convenience, not an immutable context transport; use
 capture-ID bundles for handoff. Live Windows app focus, provider login and UI
 paste behavior require user-machine validation beyond mocked launch tests.

@@ -105,8 +105,17 @@ def _run_checks() -> dict:
             return pyaudio.get_portaudio_version_text()
         return 'Cross-platform dependencies loaded; Windows native DLL checks require Windows'
 
+    def speech():
+        if not getattr(sys, 'frozen', False) and importlib.util.find_spec('faster_whisper') is None:
+            return 'Optional source speech extra is not installed; typed captures remain available'
+        import av
+        import ctranslate2
+        from faster_whisper import WhisperModel  # noqa: F401 - load native speech dependencies
+        return f'Local speech runtime loaded: CTranslate2 {ctranslate2.__version__}, PyAV {av.__version__}. No model downloaded.'
+
     for name, callback in [('resources', resources), ('qt', qt), ('storage', storage),
-                           ('capture', capture), ('ocr', ocr), ('application', application), ('native', native)]:
+                           ('capture', capture), ('ocr', ocr), ('application', application), ('native', native),
+                           ('speech', speech)]:
         check(name, callback)
     return {'success': all(result['ok'] for result in checks.values()), 'checks': checks,
             'version': app_version(), 'frozen': bool(getattr(sys, 'frozen', False)), 'platform': platform.system()}

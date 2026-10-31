@@ -26,7 +26,7 @@ Invoke-Checked $Python @("-m", "venv", "build/windows/venv")
 $BuildPython = Join-Path $Root "build/windows/venv/Scripts/python.exe"
 $env:PYTHONNOUSERSITE = "1"
 $env:QT_QPA_PLATFORM = "offscreen"
-Invoke-Checked $BuildPython @("-m", "pip", "install", "--disable-pip-version-check", "-r", "packaging/requirements-build.txt", ".", "pytest")
+Invoke-Checked $BuildPython @("-m", "pip", "install", "--disable-pip-version-check", "-r", "packaging/requirements-build.txt", ".[speech]", "pytest")
 $PreviousArrowHome = $env:ARROW_HOME
 $PreviousArrowDbPath = $env:ARROW_DB_PATH
 $TestHome = Join-Path ([System.IO.Path]::GetTempPath()) ("ArrowAnnotate-source-tests-" + [guid]::NewGuid().ToString("N"))

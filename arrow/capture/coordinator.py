@@ -48,7 +48,13 @@ class CaptureCoordinator(QObject):
         self._phase = 'finishing'
         self.notch.set_recording(False)
         self.manager.transition_to(CaptureState.COLLECTING_CONTEXT, capture_id=self._capture_id)
-        self.voice.finish_listening()
+        typed = getattr(self.overlay, 'instruction_text', lambda: '')().strip()
+        if typed:
+            self.manager.active_session.raw_instruction = typed
+            self.voice.stop_listening()
+            self._speech = ('', '')
+        else:
+            self.voice.finish_listening()
         # Emits a frozen scene synchronously. Snapshot now, before waiting for
         # recognition, so the screenshot matches what the user pointed at.
         self.overlay.hide_overlay()
@@ -98,7 +104,7 @@ class CaptureCoordinator(QObject):
         else:
             self.notch.set_status('Preparing annotated capture…')
         try:
-            self.on_ready(session, self._frame, text)
+            self.on_ready(session, self._frame, session.raw_instruction or text)
         except Exception as exc:
             log.exception('Capture processing could not start')
             session.error = str(exc)

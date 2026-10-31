@@ -5,6 +5,8 @@ MCP overrides pointing at the same Arrow database. It does not use `codex exec`.
 The actual screenshot is attached and full context is available through
 `arrow_get_capture_bundle(capture_id)`.
 
+For the shared HTTP endpoint and REST API, see [local context setup](local-context-api.md).
+
 For persistent Codex CLI/desktop configuration, use the supported command:
 
 ```powershell

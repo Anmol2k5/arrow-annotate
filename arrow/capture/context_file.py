@@ -44,6 +44,7 @@ def build_context_md(
     change_request: Optional[dict] = None,
     annotated_path: Optional[str] = None,
     agent_annotated_path: Optional[str] = None,
+    window_context: Optional[dict] = None,
 ) -> str:
     """Build a Markdown context document from pipeline results.
 
@@ -76,6 +77,14 @@ def build_context_md(
         lines.append("```json")
         lines.append(json.dumps(ax_tree, indent=2, default=str))
         lines.append("```\n")
+
+    if window_context:
+        lines.append('## Captured Window Text\n')
+        lines.append('Read-only accessibility evidence; unavailable or partial text is marked.\n')
+        for role, window in window_context.items():
+            lines.append(f"### {role}: {window.get('window_title', '')}\n")
+            lines.append(f"Status: {window.get('status', 'unavailable')}\n")
+            lines.append(window.get('text', '') + '\n')
 
     if gesture_trail:
         lines.append("## Gesture Trail\n")

@@ -1,3 +1,4 @@
+import json
 from threading import Event
 from types import SimpleNamespace
 
@@ -6,6 +7,25 @@ from PyQt6.QtWidgets import QApplication, QDialog
 
 from arrow.storage import settings
 from arrow.ui.notch import DynamicNotch
+
+
+def test_agents_can_copy_the_actual_local_mcp_endpoint_without_exposing_token_in_labels(tmp_path, monkeypatch):
+    from arrow.server.security import TokenManager
+    from arrow.server.server import app as server_app
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    tokens = TokenManager(str(tmp_path / 'token'))
+    monkeypatch.setitem(server_app.config, 'TOKEN_MANAGER', tokens)
+    qt = QApplication.instance() or QApplication([])
+    notch = DynamicNotch(server=SimpleNamespace(_running=True, base_url='http://127.0.0.1:54321'))
+    panel = notch._settings_view
+    panel._refresh_endpoint()
+    assert '54321/mcp' in panel.endpoint_status.text()
+    assert tokens.get_or_create() not in panel.endpoint_status.text()
+    panel.copy_mcp_button.click()
+    config = json.loads(qt.clipboard().text())['mcpServers']['arrow']
+    assert config['url'] == 'http://127.0.0.1:54321/mcp'
+    assert config['headers']['Authorization'] == 'Bearer ' + tokens.get_or_create()
+    notch.close()
 
 
 def test_settings_replace_captures_inside_the_same_notch(tmp_path, monkeypatch):

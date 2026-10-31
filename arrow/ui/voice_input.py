@@ -3,6 +3,8 @@ import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from arrow.speech.offline import VoiceModelUnavailable, transcribe_local
+
 logger = logging.getLogger("arrow.ui.voice_input")
 
 
@@ -92,12 +94,9 @@ class VoiceInput(QObject):
         try:
             import speech_recognition as sr
 
-            recognizer = sr.Recognizer()
-            # Network I/O must not leave a capture processing indefinitely.
-            recognizer.operation_timeout = 15
             frames = []
             # Serialize device ownership, but release the microphone before
-            # network recognition so a new capture can start immediately.
+            # local recognition so a new capture can start immediately.
             with self._microphone_lock:
                 if not self._is_current(generation):
                     return
@@ -121,12 +120,11 @@ class VoiceInput(QObject):
             if not frames:
                 error = 'No audio recorded'
             else:
-                try:
-                    transcript = recognizer.recognize_google(audio, language=language)
-                except sr.UnknownValueError:
+                transcript = transcribe_local(audio, language)
+                if not transcript:
                     error = 'Could not understand audio'
-                except sr.RequestError as exc:
-                    error = f'Speech recognition error: {exc}'
+        except VoiceModelUnavailable as exc:
+            error = str(exc)
         except ImportError:
             error = 'Install: pip install SpeechRecognition pyaudio'
         except OSError:

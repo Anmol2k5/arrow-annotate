@@ -51,6 +51,19 @@ def setup_capture():
     return coordinator, manager, voice, overlay, events
 
 
+def test_typed_instruction_finishes_without_a_microphone_or_transcription():
+    coordinator, manager, voice, overlay, events = setup_capture()
+    overlay.instruction_text = lambda: 'Move this button to the right'
+    coordinator.start()
+    voice.finished.emit('', 'No microphone found', manager.active_session.capture_id)
+    coordinator.finish()
+    ready = [event[1] for event in events if event[0] == 'ready']
+    assert len(ready) == 1
+    assert manager.active_session.raw_instruction == 'Move this button to the right'
+    assert ready[0][2] == 'Move this button to the right'
+    assert voice.cancelled == 1
+
+
 def test_release_snapshots_immediately_but_waits_for_complete_transcript():
     coordinator, manager, voice, _, events = setup_capture()
     coordinator.start()

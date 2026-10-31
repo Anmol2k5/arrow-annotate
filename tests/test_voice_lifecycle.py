@@ -51,18 +51,13 @@ def qt_app():
 def install_speech(monkeypatch, sources, recognize=None):
     devices = iter(sources)
 
-    class Recognizer:
-        operation_timeout = None
-
-        def recognize_google(self, audio, language):
-            assert self.operation_timeout and self.operation_timeout <= 30
-            if recognize:
-                return recognize(audio, language)
-            return audio.frame_data.decode('ascii')
-
+    def transcribe(audio, language):
+        if recognize:
+            return recognize(audio, language)
+        return audio.frame_data.decode('ascii')
+    monkeypatch.setattr('arrow.ui.voice_input.transcribe_local', transcribe)
     monkeypatch.setitem(sys.modules, 'speech_recognition', SimpleNamespace(
-        Recognizer=Recognizer, Microphone=lambda: next(devices), AudioData=AudioData,
-        UnknownValueError=ValueError, RequestError=RuntimeError))
+        Microphone=lambda: next(devices), AudioData=AudioData))
 
 
 def collect(voice):

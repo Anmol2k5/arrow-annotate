@@ -85,6 +85,7 @@ function inspectElement(x, y) {
     testId,
     route,
     pageUrl: window.location.href || "",
+    pageTitle: document.title || "",
     accessibility: a11y,
     viewport,
     text: el.textContent?.trim()?.slice(0, 200) || "",

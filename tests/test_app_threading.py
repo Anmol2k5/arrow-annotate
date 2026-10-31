@@ -37,7 +37,7 @@ def test_dispatcher_logs_callback_errors_without_escaping(caplog):
     assert app is QApplication.instance()
 
 
-def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_session=False, cancel_pending=False, switch_project=None):
+def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_session=False, cancel_pending=False, switch_project=None, fail_context=False):
     from types import SimpleNamespace
 
     import arrow.app as application
@@ -118,6 +118,8 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
                 self.project_dir = project
 
             def resolve_annotations(self, annotations):
+                if fail_context:
+                    raise RuntimeError('Accessibility provider failed')
                 return None, None
 
             def run(self, **kwargs):
@@ -163,6 +165,12 @@ def test_capture_failure_is_recorded_in_session_instead_of_escaping(monkeypatch,
 def test_capture_remains_ready_when_optional_agentation_is_offline(monkeypatch, tmp_path):
     from arrow.capture.session import CaptureState
     manager = run_fake_application(monkeypatch, tmp_path, fail_screenshot=False)
+    assert manager.active_session.state == CaptureState.READY
+
+
+def test_optional_context_failure_still_saves_the_screenshot(monkeypatch, tmp_path):
+    from arrow.capture.session import CaptureState
+    manager = run_fake_application(monkeypatch, tmp_path, fail_screenshot=False, fail_context=True)
     assert manager.active_session.state == CaptureState.READY
 
 

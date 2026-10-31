@@ -105,6 +105,7 @@ class ContextOrchestrator:
         self.ws_bridge = ws_bridge
         self.project_dir = project_dir
         self.screenshots_dir = screenshots_dir
+        self.window_contexts: dict = {}
 
     def set_project_dir(self, path: Optional[str]) -> None:
         """Update the selected repository for subsequent captures."""
@@ -188,7 +189,7 @@ class ContextOrchestrator:
                 application_mode=application_mode,
                 project=repo.to_dict(),
                 raw_instruction=instruction,
-                voice_transcript=instruction,
+                voice_transcript='' if session.raw_instruction else session.voice_transcript,
                 annotations=[a.model_dump() for a in annotations],
                 source_context=(source.context if source else {}),
                 destination_context=(destination.context if destination else {}),
@@ -211,7 +212,7 @@ class ContextOrchestrator:
             )
             if self.store is not None:
                 record.annotations = [a.model_dump() for a in annotations]
-                record.original_voice_transcript = session.voice_transcript or instruction
+                record.original_voice_transcript = session.voice_transcript or None
                 record.capture_context = {
                     **session.context,
                     'repository': repo.to_dict(),
@@ -228,6 +229,7 @@ class ContextOrchestrator:
             session.destination_anchor = (destination.context if destination else None)
             session.raw_instruction = instruction
             session.context = {
+                **session.context,
                 "repository": repo.to_dict(),
                 "change_request": change_request.to_dict(),
                 "source": (source.to_dict() if source else None),
@@ -244,6 +246,8 @@ class ContextOrchestrator:
                 change_request=change_request.to_dict(),
                 annotated_path=assets["annotated"],
                 agent_annotated_path=assets.get("agent-annotated"),
+                gesture_trail=session.context.get('gesture_trail'),
+                window_context=session.context.get('window_context'),
             )
             try:
                 mirror_latest(
@@ -321,7 +325,13 @@ class ContextOrchestrator:
         cx, cy = int(x + w / 2), int(y + h / 2)
 
         # Tier 1: browser extension DOM inspection (richest, exact).
-        element = self._browser_inspect(cx, cy)
+        window = self.window_contexts.get(role)
+        browser_processes = {'chrome.exe', 'msedge.exe', 'brave.exe', 'firefox.exe', 'opera.exe', 'vivaldi.exe'}
+        element = self._browser_inspect(cx, cy) if window is None or window.get('process', '').lower() in browser_processes else None
+        if element is not None and window is not None:
+            title = element.get('pageTitle', '')
+            if not title or not window.get('window_title', '').startswith(title):
+                element = None
         if element is not None:
             return AnchorResolution(
                 role=role,
@@ -333,6 +343,17 @@ class ContextOrchestrator:
             )
 
         # Tier 2: native UIA / window-title / URL resolution.
+        if window is not None:
+            observed = window.get('element') or {}
+            provenance = 'windows_uia' if window.get('available') else 'native_window'
+            confidence = 0.8 if observed else 0.25
+            return AnchorResolution(
+                role=role,
+                context={**observed, 'window_title': window.get('window_title', ''),
+                         'text_status': window.get('status', 'unavailable'), 'source': provenance,
+                         'confidence': confidence, 'resolved': bool(observed)},
+                source=provenance, confidence=confidence, resolved=bool(observed),
+            )
         native = self._native_resolve((x, y, w, h))
         if native is not None:
             return AnchorResolution(

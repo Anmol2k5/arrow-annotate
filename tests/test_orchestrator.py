@@ -410,3 +410,31 @@ def test_resolution_captured_at_release_is_used_after_speech_finishes(tmp_path):
                       resolved_anchors=resolved)
     assert result.error is None
     assert result.source.context['selector'] == 'button#pricing-cta'
+
+
+def test_native_owner_prevents_using_an_underlying_browser_tab_and_persists_window_text(tmp_path):
+    store = make_store(tmp_path)
+    orch = make_orchestrator(tmp_path, bridge=FakeBridge(BROWSER_ELEMENT), store=store)
+    window = {'process': 'notepad.exe', 'window_title': 'Notes', 'available': True,
+              'text': 'Full accessible document content', 'status': 'complete',
+              'element': {'name': 'Save', 'control_type': 'ButtonControl'}}
+    orch.window_contexts = {'source': window}
+    session = CaptureSession(context={'window_context': orch.window_contexts,
+                                     'gesture_trail': [{'x': 110, 'y': 120}]})
+    session.annotations = [source_annotation(session.capture_id)]
+    result = orch.run(session, {'x': 100, 'y': 100, 'width': 200, 'height': 60},
+                      instruction='Move this control', raw_img=make_raw(),
+                      screen_info=make_mapper().screens[0], mapper=make_mapper())
+    assert result.error is None
+    assert result.source.source == 'windows_uia'
+    assert result.source.context['name'] == 'Save'
+    assert store.get_all()[0].capture_context['window_context']['source']['text'] == window['text']
+    assert session.context['window_context']['source']['text'] == window['text']
+
+
+def test_browser_evidence_must_match_the_frozen_owner_title(tmp_path):
+    orch = make_orchestrator(tmp_path, bridge=FakeBridge({**BROWSER_ELEMENT, 'pageTitle': 'Another tab'}))
+    orch.window_contexts = {'source': {'process': 'chrome.exe', 'window_title': 'Pricing - Google Chrome',
+                                     'status': 'unavailable'}}
+    source, _ = orch.resolve_annotations([source_annotation('capture')])
+    assert source.source == 'native_window' and not source.resolved

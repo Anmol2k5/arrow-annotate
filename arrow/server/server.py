@@ -22,6 +22,7 @@ from arrow.capture.screenshot_service import find_mss_monitor
 from arrow.context.highlight_resolver import HighlightResolver
 from arrow.context.hybrid_pointer import find_target
 from arrow.core.paths import data_dir
+from arrow.mcp.http import register_mcp_http
 from arrow.server.security import (
     LOCALHOST_HOSTS,
     MAX_REQUEST_BYTES,
@@ -978,3 +979,7 @@ class AgentServer:
     def ws_bridge(self):
         """The WebSocket bridge used by the browser extension."""
         return self._ws_bridge
+
+
+# The context transport reuses this server, local authorization and capture DB.
+register_mcp_http(app)

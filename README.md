@@ -27,13 +27,16 @@ native OS control. Use Python 3.12:
 
 ```powershell
 py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -e ".[dev,speech]"
 .venv\Scripts\python main.py
 ```
 
-Microphone input requires a working recording device. Speech recognition uses
-Google's speech service. Agentation at `http://127.0.0.1:4747` is optional;
-captures remain available through MCP and direct providers when it is offline.
+Microphone input requires a working recording device. In **Settings → Capture →
+On-device voice**, download the multilingual Whisper base model once (about
+150 MB). Recognition then runs on this device, without uploading audio or fetching
+weights during a capture. No account or cloud API key is required by Arrow.
+Typed instructions work without a model or microphone. Optional Agentation
+forwarding is disabled unless `ARROW_AGENTATION_ENABLED=1` is explicitly set.
 
 ## Capture and send
 
@@ -47,6 +50,9 @@ speak your complete instruction. Release either shortcut key to finish. Speech
 pauses do not end the capture. Arrow captures the screen immediately on release,
 then waits for transcription before showing the saved card. **Esc** cancels.
 The capture button also starts a session; use **Done** or **Enter** to finish it.
+You can type in the overlay instead of speaking; typed instructions take priority.
+Each selected window contributes its accessible text where available. Password
+controls are excluded; inaccessible or bounded text is marked unavailable/partial.
 
 The first stroke gets a red **1 Source** box; the second gets a green
 **2 Destination** box and a connecting arrow. These markers appear in both the
@@ -73,8 +79,14 @@ In **Settings → Agents**, open the install guide if a CLI is missing, then cho
 or CLI window; Arrow checks the result and shows **Connected** only when confirmed.
 **Refresh connections** detects newly installed CLIs and retries status checks.
 Choose your project repository in the same tab, then use **Codex** or **Claude
-Code** on a capture card. Codex receives an image attachment; Claude receives
-the image in its stream input. Arrow does not store account credentials.
+Code** through **Open in agent**. Codex receives an image attachment; Claude
+receives access to the immutable context bundle and images through MCP/local files.
+Arrow does not store account credentials. The connected agent has its own account
+and data-processing policy.
+
+**Agents → Local MCP and REST** shows the shared local endpoint and copies an
+HTTP MCP connection configuration. Existing stdio clients still work. See the
+[local endpoint guide](docs/local-context-api.md) for Claude/Codex commands and REST.
 
 **General** also controls automatic expansion for capture updates and keeping
 the notch open. Existing screenshots retain their original pixels; make a new

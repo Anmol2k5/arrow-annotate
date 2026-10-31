@@ -18,6 +18,7 @@ hiddenimports = []
 for package in (
     "speech_recognition", "pyaudio", "keyboard", "uiautomation",
     "comtypes", "onnxruntime", "rapidocr_onnxruntime",
+    "faster_whisper", "ctranslate2", "av", "tokenizers", "huggingface_hub",
 ):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas

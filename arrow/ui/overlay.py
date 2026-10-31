@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from arrow.capture.annotation_scene import build_annotation_scene
 from arrow.capture.session import Annotation
@@ -140,7 +140,17 @@ class SelectionOverlay(QWidget):
             button.clicked.connect(lambda checked=False, target=signal: target.emit())
             row.addWidget(button)
         layout.addWidget(toolbar, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self._instruction_input = QLineEdit()
+        self._instruction_input.setPlaceholderText('Or type an instruction, then press Enter / Done')
+        self._instruction_input.setAccessibleName('Capture instruction')
+        self._instruction_input.setMaximumWidth(560)
+        self._instruction_input.setStyleSheet('background:#18181b;color:#fafafa;border:1px solid #52525b;border-radius:10px;padding:10px;')
+        self._instruction_input.returnPressed.connect(self.finish_requested)
+        layout.addWidget(self._instruction_input, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch()
+
+    def instruction_text(self):
+        return self._instruction_input.text().strip()
 
     def get_gesture_trail(self) -> list[dict]:
         """Export all locked strokes as serializable gesture data.
@@ -181,6 +191,7 @@ class SelectionOverlay(QWidget):
         self._update_geometry()
         self._active = True
         self._strokes.clear()
+        self._instruction_input.clear()
         self._scene_key = None
         self._scene = []
         self._current_stroke = None

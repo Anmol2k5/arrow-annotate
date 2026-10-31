@@ -26,7 +26,7 @@ For an agent's MCP configuration, use the absolute installed path to `ArrowMCP.e
 }
 ```
 
-`ArrowMCP.exe` runs the MCP server over standard input/output. `ArrowAnnotate.exe` launches the desktop UI. The windowed GUI executable cannot provide MCP console streams; use `ArrowMCP.exe`. Voice transcription requires network access to the configured speech service; microphone permissions, input devices, global hotkeys, and desktop capture must be tested on a real interactive Windows desktop. OCR models are included for offline OCR.
+`ArrowMCP.exe` runs the MCP server over standard input/output. `ArrowAnnotate.exe` launches the desktop UI. The windowed GUI executable cannot provide MCP console streams; use `ArrowMCP.exe`. Voice uses local Whisper; download its model once in Settings → Capture before speaking. The installer includes the speech runtime, while model weights are installed separately. Microphone permissions, input devices, global hotkeys, and desktop capture must be tested on a real interactive Windows desktop. OCR models are included for offline OCR.
 
 ## Build locally
 

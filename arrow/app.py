@@ -1,5 +1,6 @@
 import ctypes
 import logging
+import os
 import signal
 import sys
 import threading
@@ -13,6 +14,7 @@ from arrow.capture.coordinator import CaptureCoordinator
 from arrow.capture.screenshot_service import ScreenshotService
 from arrow.capture.session import Annotation, CaptureState, SessionManager
 from arrow.context.orchestrator import ContextOrchestrator
+from arrow.context.window_text import collect_window_contexts, freeze_window_targets
 from arrow.core.hotkeys import HoldShortcut
 from arrow.server.server import AgentServer
 from arrow.storage.capture_store import CaptureStore
@@ -123,6 +125,7 @@ def main():
         notch.hide()
         try:
             raw_img, screen_info, mapper = screenshot_service.capture_raw(overlay)
+            targets = freeze_window_targets(session.annotations)
         finally:
             if visible:
                 notch.show()
@@ -131,15 +134,17 @@ def main():
         anchors = Future()
         def resolve_context():
             try:
-                anchors.set_result(capture_pipeline.resolve_annotations(session.annotations))
+                windows = collect_window_contexts(targets)
+                capture_pipeline.window_contexts = windows
+                anchors.set_result((windows, capture_pipeline.resolve_annotations(session.annotations)))
             except Exception as exc:
                 anchors.set_exception(exc)
         threading.Thread(target=resolve_context, daemon=True).start()
-        return data, raw_img, screen_info, mapper, dict(capture_context), anchors, capture_pipeline
+        return data, raw_img, screen_info, mapper, dict(capture_context), anchors, capture_pipeline, targets
 
     def on_ready(session, frame, voice_text):
         capture_id = session.capture_id
-        data, raw_img, screen_info, mapper, context, anchors, capture_pipeline = frame
+        data, raw_img, screen_info, mapper, context, anchors, capture_pipeline, targets = frame
         rect = data.get("source") or {
             "x": screen_info.x, "y": screen_info.y,
             "width": screen_info.w, "height": screen_info.h,
@@ -161,10 +166,13 @@ def main():
                 # collect repository context, render annotated screenshot +
                 # crops, compile the change request, persist the record.
                 try:
-                    resolved_anchors = anchors.result(timeout=12)
+                    windows, resolved_anchors = anchors.result(timeout=12)
                 except Exception:
                     log.warning("Element evidence unavailable; using screenshot context", exc_info=True)
+                    windows = {role: {**target, 'available': False, 'text': '', 'status': 'unavailable'}
+                               for role, target in targets.items()}
                     resolved_anchors = (None, None)
+                session.context['window_context'] = windows
                 pipeline = capture_pipeline.run(
                     session=session,
                     rect=rect,
@@ -222,6 +230,8 @@ def main():
         threading.Thread(target=run_capture, daemon=True).start()
 
     def _send_to_agentation(record, capture_id):
+        if os.environ.get('ARROW_AGENTATION_ENABLED') != '1':
+            return
         if session_manager.active_session is None or session_manager.active_session.capture_id != capture_id:
             return
 
