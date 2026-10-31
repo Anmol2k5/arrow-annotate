@@ -54,8 +54,8 @@ def test_bundle_is_bound_to_requested_capture_and_contains_persisted_context(tmp
     assert bundle.metadata["annotations"] == old.annotations
     assert bundle.metadata["repository_path"] == str(tmp_path)
     for value in ("Save", "Toolbar", "Editor", "Browser", "abc123", "original spoken words", old.id):
-        assert value in Path(bundle.context_path).read_text()
-    assert Path(bundle.prompt_path).read_text() == bundle.prompt_text
+        assert value in Path(bundle.context_path).read_text(encoding='utf-8')
+    assert Path(bundle.prompt_path).read_text(encoding='utf-8') == bundle.prompt_text
     assert Path(bundle.context_path).is_file()
     assert Path(bundle.directory, "capture.json").is_file()
     assert Image.open(bundle.annotated_path).getpixel((0, 0)) == (255, 0, 0)
@@ -73,7 +73,7 @@ def test_edits_preserve_original_speech_and_create_a_new_immutable_revision(tmp_
     store.update_change_request(cap.id, changed, "Make it green")
     second = build_capture_bundle(cap.id, db)
     assert first.directory != second.directory
-    assert "Make it green" not in Path(first.prompt_path).read_text()
+    assert "Make it green" not in Path(first.prompt_path).read_text(encoding='utf-8')
     assert "Make it green" in second.prompt_text
     assert second.metadata["original_voice_transcript"] == "original spoken words"
     assert store.get(cap.id).annotation_text == "Make it green"
@@ -81,7 +81,7 @@ def test_edits_preserve_original_speech_and_create_a_new_immutable_revision(tmp_
     markdown = ArrowTools(repo).call("arrow_get_context_md", {"capture_id": cap.id})
     assert "Make it green" in markdown
     assert "original spoken words" not in markdown
-    assert "original spoken words" in Path(second.context_path).read_text()
+    assert "original spoken words" in Path(second.context_path).read_text(encoding='utf-8')
     Image.new("RGB", (40, 30), "green").save(cap.screenshot_path)
     assert Image.open(first.annotated_path).getpixel((0, 0)) == (255, 0, 0)
 
@@ -124,7 +124,7 @@ def test_delete_invalidates_matching_mirror_and_bundles_without_removing_other_l
     store.add(newer)
     mirror_latest(newer.screenshot_path, "newer context", newer.id)
     store.delete(old.id)
-    assert Path(latest_dir(), "context.md").read_text() == "newer context"
+    assert Path(latest_dir(), "context.md").read_text(encoding='utf-8') == "newer context"
 
 
 def test_scene_round_trips_and_legacy_capture_does_not_invent_original_speech(tmp_path, storage):

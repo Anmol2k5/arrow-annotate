@@ -119,10 +119,11 @@ def test_model_download_uses_configured_proxy_and_ca_without_inheriting_auth(tmp
     from arrow.speech import offline
 
     monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    # Windows environment keys are case-insensitive; clear aliases first.
+    monkeypatch.delenv('https_proxy', raising=False)
     monkeypatch.setenv('HTTPS_PROXY', 'http://configured-proxy.example:8080')
     monkeypatch.setenv('REQUESTS_CA_BUNDLE', '/configured/corporate-ca.pem')
     monkeypatch.setenv('HF_TOKEN', 'must-not-be-sent')
-    monkeypatch.delenv('https_proxy', raising=False)
     monkeypatch.delenv('NO_PROXY', raising=False)
     monkeypatch.delenv('no_proxy', raising=False)
     files = {'model.bin': b'weights', 'config.json': b'config', 'tokenizer.json': b'tokens'}
