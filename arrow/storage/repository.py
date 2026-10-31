@@ -204,6 +204,25 @@ class Repository:
                 log.exception("Atomic capture deletion failed for %s", capture_id)
                 raise
             self._delete_asset_files(conn, asset_paths, capture_id)
+            from pathlib import Path
+
+            from arrow.capture.context_file import latest_dir
+            from arrow.core.paths import application_home
+            handoffs = (application_home() / 'handoffs').resolve()
+            for path in asset_paths:
+                parent = Path(path).resolve().parent
+                if parent.is_relative_to(handoffs):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        pass
+            manifest = Path(latest_dir()) / 'manifest.json'
+            try:
+                if json.loads(manifest.read_text(encoding='utf-8')).get('capture_id') == capture_id:
+                    for name in ('capture.png', 'context.md', 'manifest.json'):
+                        (manifest.parent / name).unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
 
     def _delete_asset_files(self, conn, paths: list[str], capture_id: Optional[str]) -> None:
         for path in paths:

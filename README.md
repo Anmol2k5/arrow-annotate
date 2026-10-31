@@ -120,3 +120,16 @@ JavaScript world; DOM inspection remains in the isolated content script.
 Codex runs use its `workspace-write` sandbox and attach the annotated screenshot.
 Claude Code uses the configured permission mode. Arrow does not intercept a
 child agent's individual tool calls; Claude's permissions remain CLI-controlled.
+
+## Visible agent handoff (0.2)
+
+Capture cards now offer one client selector and **Open in agent**. Codex/Claude
+Code open visible interactive sessions with a capture-ID bundle and per-session
+MCP configuration. VS Code supports its documented agent draft link. Codex desktop
+opens the workspace and copies context for manual paste; unsupported prefill is
+not reported as completed. Desktop login/focus behavior still needs testing on
+an installed user's Windows machine.
+
+See [current architecture](docs/current-architecture.md) and the
+[local Heyclick audit prompt](docs/local-heyclick-audit-prompt.md). The reference
+Supamaus site was blocked by the cloud proxy, so exact product parity is unverified.

@@ -22,6 +22,9 @@ class CaptureRecord(BaseModel):
     agentation_status: str = ""
     window_title: str = ""
     change_request: Optional[Dict[str, Any]] = None
+    original_voice_transcript: Optional[str] = None
+    annotations: list[dict] = Field(default_factory=list)
+    capture_context: dict = Field(default_factory=dict)
 
     def formatted_context(self) -> str:
         parts = []

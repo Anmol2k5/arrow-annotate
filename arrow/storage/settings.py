@@ -34,7 +34,7 @@ def _load() -> dict:
         with open(config_path(), encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
 
 
@@ -60,7 +60,7 @@ def _save(data: dict) -> None:
 def get_project_dir() -> Optional[str]:
     """The last selected project directory, or None when unset/invalid."""
     path = _load().get("selected_project_dir")
-    if path and os.path.isdir(path):
+    if isinstance(path, str) and path and os.path.isdir(path):
         return path
     return None
 

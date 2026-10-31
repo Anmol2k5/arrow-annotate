@@ -1,81 +1,22 @@
-# Codex MCP setup
+# Codex and Arrow MCP
 
-Arrow exposes a local MCP (Model Context Protocol) server so Codex can retrieve
-the latest Arrow change request and screenshots without any copy-paste.
+Arrow's **Codex** handoff opens the interactive CLI with per-session `-c`
+MCP overrides pointing at the same Arrow database. It does not use `codex exec`.
+The actual screenshot is attached and full context is available through
+`arrow_get_capture_bundle(capture_id)`.
 
-## Start the server
+For persistent Codex CLI/desktop configuration, use the supported command:
 
-The server speaks JSON-RPC 2.0 over stdio:
-
-```bash
-python -m arrow.mcp.server
+```powershell
+codex mcp add --env "ARROW_HOME=$env:USERPROFILE\.arrow" arrow -- "C:\path\to\ArrowMCP.exe" --mcp
+codex mcp list
 ```
 
-It reads captures from the Arrow SQLite database (default: `arrow.db` in the
-project root, override with `ARROW_DB_PATH`).
+Use the actual installation path. Codex configuration uses TOML `mcp_servers`
+entries in `config.toml`; `.codex/mcp.json` is not Codex's configuration format.
+For source development, replace the executable with the virtual environment's
+Python and pass the absolute `main.py` path before `--mcp`.
 
-## Register with Codex
-
-Add Arrow to your Codex MCP configuration.
-
-### Project-level
-
-Create `.codex/mcp.json` in your repository:
-
-```json
-{
-  "mcpServers": {
-    "arrow": {
-      "command": "python",
-      "args": ["-m", "arrow.mcp.server"],
-      "env": {
-        "ARROW_DB_PATH": "C:\\path\\to\\arrow.db"
-      }
-    }
-  }
-}
-```
-
-### Global
-
-Add the same `arrow` entry to your global Codex config (`~/.codex/config.toml`
-or the equivalent MCP servers file for your Codex version).
-
-## Available tools
-
-Read-only:
-
-- `arrow_get_latest_change_request`
-- `arrow_get_change_request`
-- `arrow_list_change_requests`
-- `arrow_get_capture_metadata`
-- `arrow_get_project_context`
-- `arrow_get_source_context`
-- `arrow_get_destination_context`
-
-Controlled mutation (status only — never OS actions):
-
-- `arrow_mark_started`
-- `arrow_mark_completed`
-- `arrow_mark_failed`
-- `arrow_add_agent_note`
-
-## Available resources
-
-Screenshot assets are exposed as MCP resources:
-
-```
-arrow://captures/{capture_id}/raw
-arrow://captures/{capture_id}/annotated
-arrow://captures/{capture_id}/context-crop
-arrow://captures/{capture_id}/source-crop
-arrow://captures/{capture_id}/destination-crop
-```
-
-## Workflow
-
-1. Create a request in Arrow.
-2. In Codex, say: "Implement the latest Arrow request."
-3. Codex calls `arrow_get_latest_change_request`, reads the screenshots, edits
-   your repository, and reports status via `arrow_mark_started` /
-   `arrow_mark_completed`.
+MCP registration and account sign-in are separate. Codex desktop's documented
+workspace launcher does not document prompt/image query parameters. Arrow opens
+the workspace and copies context for pasting instead of claiming automatic prefill.

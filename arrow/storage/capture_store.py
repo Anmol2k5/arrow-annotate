@@ -50,9 +50,17 @@ class CaptureStore:
                     conn.execute('INSERT INTO assets (capture_id, path, type) VALUES (?, ?, ?)',
                                  (record.id, os.path.abspath(path), asset_type.replace('_', '-')))
 
+            conn.execute('DELETE FROM annotations WHERE capture_id = ?', (record.id,))
+            for annotation in record.annotations:
+                conn.execute('INSERT INTO annotations(capture_id,data) VALUES(?,?)',
+                             (record.id, json.dumps(annotation)))
             # Store context
             conn.execute('DELETE FROM contexts WHERE capture_id = ?', (record.id,))
             context_data = {
+                "current_instruction": record.annotation_text,
+                "original_voice_transcript": record.original_voice_transcript,
+                "annotations": record.annotations,
+                "capture_context": record.capture_context,
                 "cursor_x": record.cursor_x,
                 "cursor_y": record.cursor_y,
                 "element_selector": record.element_selector,
@@ -125,6 +133,8 @@ class CaptureStore:
                 return
             cdata = json.loads(row["data"]) if row["data"] else {}
             cdata["change_request"] = json.dumps(change_request) if change_request else None
+            if annotation_text is not None:
+                cdata['current_instruction'] = annotation_text
             conn.execute(
                 "UPDATE contexts SET data = ? WHERE capture_id = ?",
                 (json.dumps(cdata), capture_id),
@@ -132,7 +142,7 @@ class CaptureStore:
             self._write_change_request(conn, capture_id, change_request)
             if annotation_text is not None:
                 conn.execute(
-                    "UPDATE sessions SET voice_transcript = ? WHERE capture_id = ?",
+                    "UPDATE sessions SET raw_instruction = ? WHERE capture_id = ?",
                     (annotation_text, capture_id),
                 )
             conn.commit()
@@ -162,8 +172,11 @@ class CaptureStore:
         return CaptureRecord(
             id=row['capture_id'],
             timestamp=row['created_at'],
-            annotation_text=row['voice_transcript'],
-            screenshot_path=row['screenshot_path'],
+            annotation_text=cdata.get('current_instruction', row['voice_transcript']),
+            original_voice_transcript=cdata.get('original_voice_transcript'),
+            annotations=cdata.get('annotations', []),
+            capture_context=cdata.get('capture_context', {}),
+            screenshot_path=row['screenshot_path'] or '',
             cursor_x=cdata.get('cursor_x', 0),
             cursor_y=cdata.get('cursor_y', 0),
             element_selector=cdata.get('element_selector') or "",

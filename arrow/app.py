@@ -116,6 +116,7 @@ def main():
         session = session_manager.active_session
         session.annotations = [Annotation.model_validate(item) for item in data.get("annotations", [])]
         session.annotation_scene_frozen = True
+        session.context['gesture_trail'] = getattr(overlay, 'get_gesture_trail', lambda: [])()
         screenshot_service = ScreenshotService()
         # Exclude both Arrow windows from the saved screenshot.
         visible = notch.isVisible()

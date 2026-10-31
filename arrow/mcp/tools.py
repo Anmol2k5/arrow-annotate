@@ -26,6 +26,8 @@ class ToolError(Exception):
 
 # JSON-Schema-ish descriptors advertised via tools/list.
 TOOL_SCHEMAS: list[dict] = [
+    {'name': 'arrow_get_capture_bundle', 'description': 'Get one saved capture with full context and annotated image.',
+     'inputSchema': {'type': 'object', 'properties': {'capture_id': {'type': 'string'}}}},
     {
         "name": "arrow_get_latest_change_request",
         "description": "Get the most recent Arrow change request (structured spatial edit).",
@@ -181,6 +183,7 @@ class ArrowTools:
             "arrow_get_ax_tree": self._ax_tree,
             "arrow_look": self._look,
             "arrow_get_context_md": self._context_md,
+            "arrow_get_capture_bundle": self._bundle,
         }
 
     def names(self) -> list[str]:
@@ -305,14 +308,23 @@ class ArrowTools:
         }
 
     def _context_md(self, args: dict) -> Any:
-        import os
+        if not args.get('capture_id') and self.repo.get_latest_capture() is None:
+            from pathlib import Path
 
-        from arrow.capture.context_file import latest_dir
-        path = os.path.join(latest_dir(), "context.md")
-        if not os.path.isfile(path):
-            raise ToolError("No context.md available. Make a capture first.")
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
+            from arrow.capture.context_file import latest_dir
+            path = Path(latest_dir()) / 'context.md'
+            if path.is_file():
+                return path.read_text(encoding='utf-8')
+        return self._bundle(args)['prompt_text']
+
+    def _bundle(self, args: dict) -> dict:
+        from dataclasses import asdict
+
+        from arrow.context.capture_bundle import build_capture_bundle
+        capture = self._require(args) if args.get('capture_id') else self.repo.get_latest_capture()
+        if not capture:
+            raise ToolError('No captures available.')
+        return asdict(build_capture_bundle(capture['capture_id'], self.repo._db_path))
 
 
 __all__ = ["ArrowTools", "ToolError", "TOOL_SCHEMAS"]

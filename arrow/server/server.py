@@ -276,11 +276,15 @@ def require_capability(capability: Capability):
 
 @app.route("/status", methods=["GET"])
 def status():
+    try:
+        address = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        address = '127.0.0.1'
     return jsonify({
         "agent": app.config["AGENT_NAME"],
         "version": "1.0.0",
         "hostname": socket.gethostname(),
-        "ip": socket.gethostbyname(socket.gethostname()),
+        "ip": address,
         "platform": platform.platform(),
         "python": platform.python_version(),
         "status": "healthy",

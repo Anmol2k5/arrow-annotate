@@ -27,6 +27,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -42,7 +43,7 @@ from PyQt6.QtWidgets import (
 )
 
 from arrow.intent.compiler import recompile_change_request
-from arrow.providers.runner import build_run_request, create_provider, run_provider_sync
+from arrow.providers.runner import build_run_request, create_provider
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, get_ui_preferences, set_project_dir
 from arrow.ui.clipboard import copy_capture
@@ -60,7 +61,7 @@ NOTCH_BORDER = "rgba(255, 255, 255, 12)"
 IDLE_W, IDLE_H = 152, 32
 HOME_W, HOME_H = 340, 380
 AGENTS_W, AGENTS_H = 400, 400
-SCREENSHOTS_W, SCREENSHOTS_H = 760, 640
+SCREENSHOTS_W, SCREENSHOTS_H = 520, 640
 
 TOP_OFFSET = 8
 ANIM_MS = 350
@@ -557,12 +558,18 @@ class ScreenshotThumbnail(QFrame):
         v.addLayout(copy_row)
 
         send_row = QHBoxLayout()
-        self._provider_buttons = {}
-        for name in ("Codex", "Claude Code"):
-            btn = self._action_button(f"▶ {name}", lambda _=False, n=name: self._send_to_provider(n))
-            btn.setToolTip(f"Send prompt and annotated image to {name} in the selected repository")
-            self._provider_buttons[name] = btn
-            send_row.addWidget(btn)
+        self._target_combo = QComboBox()
+        self._target_combo.setStyleSheet('QComboBox {background:#27272a;color:#fafafa;border:1px solid #3f3f46;border-radius:6px;padding:4px;} QComboBox QAbstractItemView {background:#18181b;color:#fafafa;}')
+        from arrow.providers.handoff import available_clients
+        for name, installed in available_clients().items():
+            self._target_combo.addItem(name)
+            self._target_combo.setItemData(self._target_combo.count()-1,
+                                          'Installed' if installed else 'Connect or install in Settings', Qt.ItemDataRole.ToolTipRole)
+        send_row.addWidget(self._target_combo, 1)
+        send = self._action_button('Open in agent', lambda: self._send_to_provider(self._target_combo.currentText()))
+        send.setToolTip('CLI targets start an interactive session with the context. Desktop targets may require pasting the copied context.')
+        send_row.addWidget(send)
+        self._provider_buttons = {'send': send}
         v.addLayout(send_row)
         v.addWidget(self._action_button('Connect agents / choose repository', self.connection_requested.emit))
         self._action_status = QLabel("")
@@ -728,23 +735,17 @@ class ScreenshotThumbnail(QFrame):
             self.connection_requested.emit()
             return
 
-        try:
-            provider = create_provider(name)
-        except ValueError as e:
-            QMessageBox.warning(self, "Send", str(e))
-            return
-        if not provider.detect():
-            self._action_status.setText(f'Connect {name} in Settings › Agents before sending.')
-            self.connection_requested.emit()
-            return
-
         self._set_sending(True, name)
         threading.Thread(
-            target=self._run_provider_thread, args=(provider, request, name), daemon=True
+            target=self._run_provider_thread, args=(None, request, name), daemon=True
         ).start()
 
     def _run_provider_thread(self, provider, request, name: str):
-        final = run_provider_sync(provider, request)
+        from arrow.providers.handoff import HandoffResult, handoff_capture
+        try:
+            final = handoff_capture(request.capture_id, name)
+        except Exception as error:
+            final = HandoffResult(str(error), status='failed')
         # Emitting a queued signal is thread-safe and delivers on the main thread.
         try:
             self.provider_finished.emit(final, request, name)
@@ -753,16 +754,14 @@ class ScreenshotThumbnail(QFrame):
 
     def _on_provider_finished(self, final, request, name: str):
         self._set_sending(False, name)
-        box = QMessageBox(self)
-        box.setWindowTitle(f"{name} run finished")
-        box.setIcon(QMessageBox.Icon.Information if final.type == "done" else QMessageBox.Icon.Warning)
-        box.setText(f"{final.message or final.type}\n\nCapture: {request.capture_id}")
-        box.exec()
+        if final.prompt_text:
+            QApplication.clipboard().setText(final.prompt_text)
+        self._action_status.setText(final.message)
 
     def _set_sending(self, active: bool, name: str):
         for n, btn in getattr(self, "_provider_buttons", {}).items():
             btn.setEnabled(not active)
-            btn.setText(f"⏳ {n}" if active else f"▶ {n}")
+            btn.setText("Opening…" if active else "Open in agent")
         if hasattr(self, '_action_status'):
             self._action_status.setText(f"Sending image and prompt to {name}…" if active else "")
 
@@ -802,9 +801,9 @@ class ScreenshotsView(QWidget):
         pill_layout.setContentsMargins(8, 4, 8, 4)
         pill_layout.setSpacing(8)
 
-        for icon, tooltip in [("🎙️", "Voice capture"), ("⌨️", "Keyboard capture"), ("🖱️", "Pointer capture")]:
+        for icon, tooltip in [("New capture", "Draw and speak")]:
             btn = QPushButton(icon)
-            btn.setFixedSize(28, 28)
+            btn.setFixedSize(110, 32)
             btn.setToolTip(tooltip)
             btn.setStyleSheet("""
                 QPushButton {
@@ -875,6 +874,11 @@ class ScreenshotsView(QWidget):
             }
         """)
         row2.addWidget(self._all_btn)
+        self._history = QComboBox()
+        self._history.setMinimumWidth(110)
+        self._history.setStyleSheet('color: white; background: #27272a; padding: 6px; border-radius: 8px;')
+        self._history.currentIndexChanged.connect(self._select_capture)
+        row2.addWidget(self._history, 1)
 
         add_btn = QPushButton("+")
         add_btn.setFixedSize(32, 32)
@@ -888,7 +892,7 @@ class ScreenshotsView(QWidget):
             QPushButton:hover { background: #27272a; }
         """)
         add_btn.clicked.connect(self._highlight)
-        row2.addWidget(add_btn)
+        add_btn.hide()
 
         row2.addStretch()
 
@@ -906,7 +910,7 @@ class ScreenshotsView(QWidget):
             QPushButton:hover { background: #27272a; }
         """)
         copy_btn.clicked.connect(self._copy_all)
-        row2.addWidget(copy_btn)
+        copy_btn.hide()
 
         trash_btn = QPushButton("🗑️")
         trash_btn.setFixedSize(32, 32)
@@ -929,6 +933,9 @@ class ScreenshotsView(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setStyleSheet("""
             QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical { width: 6px; background: transparent; }
+            QScrollBar::handle:vertical { background: #3f3f46; border-radius: 3px; min-height: 24px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar:horizontal { height: 6px; background: transparent; }
             QScrollBar::handle:horizontal { background: rgba(255,255,255,20); border-radius: 3px; }
         """)
@@ -1016,31 +1023,32 @@ class ScreenshotsView(QWidget):
             if failed:
                 QMessageBox.warning(self, "Partial Cleanup", f"Removed from library but could not delete {len(failed)} file(s):\n" + "\n".join(failed))
 
+    def _select_capture(self, index):
+        path = self._history.itemData(index)
+        for card in self._thumbnails:
+            card.setVisible(card._path == path)
+
     def _scan_existing(self):
-        for thumb in self._thumbnails:
-            self._hbox.removeWidget(thumb)
-            thumb.deleteLater()
-        self._thumbnails.clear()
-
-        while self._hbox.count():
-            item = self._hbox.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
         from arrow.storage.capture_store import CaptureStore
-        store = CaptureStore()
-        for rec in store.get_all():
-            if os.path.exists(rec.screenshot_path):
-                self._add_thumbnail(
-                    rec.screenshot_path,
-                    rec.annotation_text,
-                    rec.timestamp,
-                    getattr(rec, 'window_title', ''),
-                    getattr(rec, 'change_request', None),
-                )
-
-        self._hbox.addStretch()
-        self._all_btn.setText(f"All {len(self._thumbnails)}")
+        selected = self._history.currentData()
+        existing = {card._path: card for card in self._thumbnails}
+        records = [record for record in CaptureStore().get_all() if os.path.isfile(record.screenshot_path)]
+        paths = {record.screenshot_path for record in records}
+        for path, card in existing.items():
+            if path not in paths:
+                self._remove_thumbnail(card)
+        self._history.blockSignals(True)
+        self._history.clear()
+        for record in records:
+            if record.screenshot_path not in existing:
+                self._add_thumbnail(record.screenshot_path, record.annotation_text, record.timestamp,
+                                    record.window_title, record.change_request)
+            self._history.addItem((record.annotation_text or 'Visual capture')[:35], record.screenshot_path)
+        index = 0 if any(record.screenshot_path not in existing for record in records) else self._history.findData(selected)
+        self._history.setCurrentIndex(max(0, index))
+        self._history.blockSignals(False)
+        self._select_capture(self._history.currentIndex())
+        self._all_btn.setText(f'{len(records)} captures')
 
     def _add_thumbnail(self, path, text="", timestamp="", window_title="", change_request=None):
         thumb = ScreenshotThumbnail(path, text, timestamp, window_title, change_request)
@@ -1057,6 +1065,9 @@ class ScreenshotsView(QWidget):
         self._all_btn.setText(f"All {len(self._thumbnails)}")
 
     def _remove_thumbnail(self, thumb):
+        index = self._history.findData(thumb._path)
+        if index >= 0:
+            self._history.removeItem(index)
         self._hbox.removeWidget(thumb)
         if thumb in self._thumbnails:
             self._thumbnails.remove(thumb)

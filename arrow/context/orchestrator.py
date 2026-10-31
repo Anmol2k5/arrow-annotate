@@ -210,6 +210,16 @@ class ContextOrchestrator:
                 change_request=change_request,
             )
             if self.store is not None:
+                record.annotations = [a.model_dump() for a in annotations]
+                record.original_voice_transcript = session.voice_transcript or instruction
+                record.capture_context = {
+                    **session.context,
+                    'repository': repo.to_dict(),
+                    'source': source.to_dict() if source else None,
+                    'destination': destination.to_dict() if destination else None,
+                    'window_title': window_title,
+                    'image_coordinates': vars(screen_info),
+                }
                 self.store.add(record)
 
             # 8. Mirror results back onto the session object.

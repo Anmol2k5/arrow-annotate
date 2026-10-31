@@ -1,31 +1,70 @@
-# Current Architecture
+# Arrow architecture — 2026-10-31
 
-## Application Startup Flow
-The application starts in `main.py`. A PyQt6 `QApplication` is initialized.
-It spawns a background daemon thread running a Flask server (`AgentServer` in `server.py`).
-It then instantiates several PyQt widgets/objects:
-- `DynamicNotch` (notch UI)
-- `SelectionOverlay` (the transparent drawing overlay)
-- `VoiceInput` (speech recognition thread)
-- `CaptureStore` (JSON-based local storage)
+Arrow is a Windows PyQt desktop application, a local capture database, a browser
+extension and an MCP stdio server. It is not an embedded copy of Codex or Claude.
 
-A global hotkey (`ctrl+shift+space`) or the notch triggers `toggle_annotation()`.
+## Runtime flow
 
-## Event Loop & Threading
-- The Qt Event Loop runs on the main thread.
-- Flask server runs in a daemon thread.
-- WebSocket bridge (for browser extension) runs its own asyncio loop in a thread.
-- Screenshots and network uploads (`_capture_task` and `_send_to_agentation`) are offloaded to ad-hoc `threading.Thread` instances.
+`main.py` → `launcher.entrypoint` → desktop logging/single-instance lock →
+`app.main` → Qt notch, overlay, microphone, capture coordinator, HTTP/WebSocket
+services and system tray. CLI `--mcp` instead serves JSON-RPC on stdin/stdout.
 
-## Current Capture Flow
-User hotkey → `SelectionOverlay` shown → User draws → `mouseRelease` triggers bounding box calculation → `selection_complete` signal emitted → `main.py` receives signal, grabs primary monitor via `mss`, crops it, reads current voice transcript → Saves to `CaptureRecord` → Refreshes notch → Spawns thread to upload to Agentation MCP via HTTP.
+The held shortcut starts an annotation session. Releasing it freezes the drawing
+and desktop image while speech recognition finishes asynchronously. The
+coordinator binds results to capture IDs and discards cancelled/stale results.
+The orchestrator collects observed element/repository evidence, renders the
+scene and crops, compiles an instruction, writes PNG files and commits SQLite
+records. Speech, original drawing points and coordinate metadata are retained.
 
-## Identified Failure Points & Context Loss
-- **Annotation marks in screenshots**: `SelectionOverlay` points fade out after 2 seconds. They are NOT baked into the saved screenshots.
-- **Strokes**: New strokes replace previous ones because `SelectionOverlay._points` handles a single continuous line.
-- **Source and Destination**: Not represented separately; the overlay only emits a single bounding box (`rect`).
-- **Browser Context**: Not integrated into the primary capture flow; it exists in `server.py` but isn't called during normal captures in `main.py`.
-- **Empty Context Fields**: `CaptureRecord` fields like `element_selector` and `computed_styles` are mostly empty because the resolver isn't actively used in the main screenshot pipeline.
-- **Voice Results**: Race conditions exist. Voice results update `current_voice_text` and can arrive after the capture logic has already executed or been cancelled.
-- **Agentation**: Selects the first available session indiscriminately (`sessions[0]["id"]`).
-- **Timestamp Collisions**: Capture IDs use `strftime("%Y%m%d_%H%M%S")`, which can collide.
+## File map
+
+- `arrow/launcher.py`, `app.py`: entry points, startup and lifecycle coordination.
+- `arrow/core`: hotkey hooks, resource/data paths and logging.
+- `arrow/capture`: session state, drawing geometry, virtual-display composition,
+  annotated PNGs, crop generation and latest-file convenience mirror.
+- `arrow/context`: DOM/native evidence, repository/source mapping, orchestration
+  and revisioned capture bundles.
+- `arrow/intent`: conservative instruction classification, anchors, ambiguities
+  and readable/structured requests. Missing evidence remains unknown.
+- `arrow/storage`: SQLite migrations, atomic request/context/assets persistence,
+  deletion and application preferences. PNGs are separate filesystem assets.
+- `arrow/ui`: slim pill, capture history/details, settings, clipboard, voice and tray.
+- `arrow/providers`: CLI discovery/auth checks, background adapters and visible
+  client handoff. Authentication remains with the official client.
+- `arrow/mcp`: tools, resources and JSON-RPC transport. The bundle tool returns
+  both complete text context and a stored annotated image, not a fresh screenshot.
+- `arrow/server`, `browser_extension`: authenticated loopback HTTP/WebSocket
+  utilities and DOM inspection. These are distinct from MCP stdio transport.
+- `packaging`, `scripts`, `.github/workflows`: Windows executable/installer build,
+  provenance, native clipboard checks and install/uninstall smoke checks.
+- `tests`: regression coverage for these boundaries; native Windows tests require Windows.
+
+## Agent handoff
+
+`build_capture_bundle(id)` reads the exact saved capture and creates a revision
+identified by its metadata/image digest. `capture.json`, `prompt.md` and copied
+PNGs preserve that revision when another capture is made or the instruction is
+edited. Original speech remains separate from the current instruction.
+
+Codex and Claude Code open interactive CLI sessions in a visible Windows console.
+Their per-session MCP configuration points to the installed `ArrowMCP.exe` (or the
+source Python entry point) and the same data directory/database. Codex receives
+an image attachment; Claude receives explicit file access and the bundle path.
+
+VS Code's documented draft URI can prefill its agent composer. This does not
+select a Codex/Claude extension. Codex desktop's documented URI opens a workspace;
+without a supported prefill parameter, Arrow copies the complete context and
+labels the remaining paste step honestly. Launching is never reported as agent
+work completion. Unsupported clients are not assumed to accept arbitrary links.
+
+## Verified limitations
+
+The cloud environment could not access `lite.supamaus.com` (proxy HTTP 403), and
+no Heyclick folder was supplied. This is an independent Windows implementation;
+exact parity with that reference has not been verified.
+
+The native rich UIA resolver is not fully connected to the normal capture path,
+and browser DOM ownership across overlapping windows needs further validation.
+The latest-file mirror is a convenience, not an immutable context transport; use
+capture-ID bundles for handoff. Live Windows app focus, provider login and UI
+paste behavior require user-machine validation beyond mocked launch tests.

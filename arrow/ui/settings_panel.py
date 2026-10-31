@@ -1,5 +1,6 @@
 """Settings and CLI connection controls embedded in the notch."""
 
+import logging
 import os
 import threading
 
@@ -22,12 +23,15 @@ from PyQt6.QtWidgets import (
 
 from arrow.storage import settings
 
+log = logging.getLogger(__name__)
+
 
 class SettingsPanel(QWidget):
     close_requested = pyqtSignal()
     repository_changed = pyqtSignal(str)
     preferences_changed = pyqtSignal()
     agents_checked = pyqtSignal(object)
+    agent_check_failed = pyqtSignal(str)
 
     def __init__(self, save_capture, parent=None):
         super().__init__(parent)
@@ -93,6 +97,7 @@ class SettingsPanel(QWidget):
             scroll.setWidget(body)
             self.pages.addWidget(scroll)
         self.agents_checked.connect(self._apply_agent_statuses)
+        self.agent_check_failed.connect(self._show_agent_check_failure)
         self._login_timer = QTimer(self)
         self._login_timer.setInterval(1000)
         self._login_timer.timeout.connect(self._poll_logins)
@@ -210,13 +215,31 @@ class SettingsPanel(QWidget):
 
         def check():
             from arrow.providers.setup import get_provider_setup_status
-            statuses = [get_provider_setup_status(name) for name in self.agent_rows]
+            statuses = []
+            for name in self.agent_rows:
+                try:
+                    statuses.append(get_provider_setup_status(name))
+                except Exception as error:
+                    # Do not expose credential-store output in labels or logs.
+                    log.warning('Connection check failed for %s (%s)', name, type(error).__name__)
+                    try:
+                        self.agent_check_failed.emit(name)
+                    except RuntimeError:
+                        return
             try:
                 self.agents_checked.emit(statuses)
             except RuntimeError:
                 pass  # The application may close while a bounded probe runs.
 
         threading.Thread(target=check, daemon=True).start()
+
+    def _show_agent_check_failure(self, name):
+        if name in self._login_processes:
+            return
+        label, button = self.agent_rows[name]
+        label.setText('Could not check connection. Refresh to retry.')
+        previous = self._agent_statuses.get(name)
+        button.setEnabled(bool(previous and previous.installed))
 
     def _apply_agent_statuses(self, statuses):
         self._checking = False

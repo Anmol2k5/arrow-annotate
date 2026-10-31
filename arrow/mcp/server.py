@@ -78,6 +78,14 @@ def dispatch(request: dict, tools: ArrowTools, resources: ResourceProvider) -> O
         except Exception as e:  # pragma: no cover - defensive
             log.exception("tool call failed")
             return _error(request_id, -32603, f"Internal error: {e}")
+        if name == 'arrow_get_capture_bundle':
+            import base64
+            from pathlib import Path
+            bundle_content = [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]
+            if value.get('annotated_path'):
+                bundle_content.append({'type': 'image', 'mimeType': 'image/png',
+                                'data': base64.b64encode(Path(value['annotated_path']).read_bytes()).decode('ascii')})
+            return _result(request_id, {'content': bundle_content})
         if name == "arrow_look":
             return _result(request_id, {
                 "content": [{"type": "image", "mimeType": "image/png", "data": value["base64"]}],
