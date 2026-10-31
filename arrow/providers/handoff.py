@@ -51,13 +51,14 @@ def mcp_server_config():
 
 def handoff_capture(capture_id, name, db_path=None):
     bundle = build_capture_bundle(capture_id, db_path)
-    repo = bundle.metadata.get('repository_path')
+    from arrow.storage.settings import get_project_dir
+    repo = bundle.metadata.get('repository_path') or get_project_dir()
     if not repo or not os.path.isdir(repo):
         raise ValueError('Select an existing project repository before opening an agent.')
     config = mcp_server_config()
     if db_path:
         config['env']['ARROW_DB_PATH'] = str(Path(db_path).resolve())
-    prompt = (f'Use Arrow capture {capture_id}. Call arrow_get_capture_bundle with this capture_id via MCP. '
+    prompt = (f'Use repository {repo}. Use Arrow capture {capture_id}. Call arrow_get_capture_bundle with this capture_id via MCP. '
               f'Also read the complete capture packet at {bundle.context_path}. '
               f'Read the annotated image at {bundle.annotated_path}. '
               'Follow the current_instruction, preserve responsive behavior, and ask about blocking ambiguities.')
