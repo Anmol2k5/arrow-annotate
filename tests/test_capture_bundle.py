@@ -54,7 +54,7 @@ def test_bundle_is_bound_to_requested_capture_and_contains_persisted_context(tmp
     assert bundle.metadata["annotations"] == old.annotations
     assert bundle.metadata["repository_path"] == str(tmp_path)
     for value in ("Save", "Toolbar", "Editor", "Browser", "abc123", "original spoken words", old.id):
-        assert value in bundle.prompt_text
+        assert value in Path(bundle.context_path).read_text()
     assert Path(bundle.prompt_path).read_text() == bundle.prompt_text
     assert Path(bundle.context_path).is_file()
     assert Path(bundle.directory, "capture.json").is_file()
@@ -79,7 +79,9 @@ def test_edits_preserve_original_speech_and_create_a_new_immutable_revision(tmp_
     assert store.get(cap.id).annotation_text == "Make it green"
     assert repo.get_capture(cap.id)["status"] == "running"
     markdown = ArrowTools(repo).call("arrow_get_context_md", {"capture_id": cap.id})
-    assert "Make it green" in markdown and "original spoken words" in markdown
+    assert "Make it green" in markdown
+    assert "original spoken words" not in markdown
+    assert "original spoken words" in Path(second.context_path).read_text()
     Image.new("RGB", (40, 30), "green").save(cap.screenshot_path)
     assert Image.open(first.annotated_path).getpixel((0, 0)) == (255, 0, 0)
 

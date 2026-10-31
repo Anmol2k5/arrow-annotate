@@ -53,6 +53,6 @@ def test_unreadable_config_encoding_uses_defaults_without_destroying_the_file(tm
     config.write_bytes(contents)
 
     assert settings.get_capture_shortcut() == 'ctrl+space'
-    assert settings.get_speech_language() == 'en-IN'
+    assert settings.get_speech_language() == 'auto'
     assert settings.get_project_dir() is None
     assert config.read_bytes() == contents

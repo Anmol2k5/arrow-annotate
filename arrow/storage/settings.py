@@ -77,8 +77,8 @@ def set_project_dir(path: str) -> None:
 
 
 DEFAULT_CAPTURE_SHORTCUT = "ctrl+space"
-DEFAULT_SPEECH_LANGUAGE = "en-IN"
-SPEECH_LANGUAGES = ("en-IN", "hi-IN", "en-US")
+DEFAULT_SPEECH_LANGUAGE = "auto"
+SPEECH_LANGUAGES = ("auto", "en-IN", "hi-IN", "en-US")
 
 
 def get_capture_shortcut() -> str:
@@ -88,7 +88,7 @@ def get_capture_shortcut() -> str:
 
 
 def get_speech_language() -> str:
-    """The preferred recognition language, defaulting to Indian English."""
+    """Saved recognition language, or local automatic detection for new installs."""
     value = _load().get("speech_language")
     return value if value in SPEECH_LANGUAGES else DEFAULT_SPEECH_LANGUAGE
 

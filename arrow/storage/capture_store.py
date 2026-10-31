@@ -119,7 +119,7 @@ class CaptureStore:
         Repository(self._db_path).delete_capture(capture_id)
 
     def update_change_request(self, capture_id: str, change_request: Optional[dict],
-                              annotation_text: Optional[str] = None) -> None:
+                              annotation_text: Optional[str] = None, capture_context: Optional[dict] = None) -> None:
         """Replace the persisted change request (and optionally the instruction text).
 
         Used by the edit-context flow when the user edits the instruction and the
@@ -135,6 +135,8 @@ class CaptureStore:
             cdata["change_request"] = json.dumps(change_request) if change_request else None
             if annotation_text is not None:
                 cdata['current_instruction'] = annotation_text
+            if capture_context is not None:
+                cdata['capture_context'] = capture_context
             conn.execute(
                 "UPDATE contexts SET data = ? WHERE capture_id = ?",
                 (json.dumps(cdata), capture_id),

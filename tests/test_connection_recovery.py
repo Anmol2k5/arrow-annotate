@@ -38,7 +38,7 @@ def test_failed_connection_probe_keeps_other_clients_usable_and_can_retry(tmp_pa
         wait_for_probe(panel)
         assert panel.refresh_agents_button.isEnabled()
         assert not thread_errors
-        assert 'Connected' in panel.agent_rows['Claude Code'][0].text()
+        assert 'CLI signed in' in panel.agent_rows['Claude Code'][0].text()
         assert panel.agent_rows['Claude Code'][1].isEnabled()
         error = panel.agent_rows['Codex'][0].text()
         assert 'retry' in error.lower() or 'refresh' in error.lower()
@@ -47,7 +47,7 @@ def test_failed_connection_probe_keeps_other_clients_usable_and_can_retry(tmp_pa
 
         panel.refresh_agents_button.click()
         wait_for_probe(panel)
-        assert 'Connected' in panel.agent_rows['Codex'][0].text()
+        assert 'CLI signed in' in panel.agent_rows['Codex'][0].text()
         assert panel.agent_rows['Codex'][1].isEnabled()
     finally:
         panel.close()

@@ -20,12 +20,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from arrow.storage.settings import config_dir
 
 LATEST_DIR = os.path.join(os.environ.get("ARROW_HOME") or str(Path.home() / ".arrow"), "latest")
+_latest_lock = threading.RLock()
 
 
 def latest_dir() -> str:
@@ -136,6 +138,22 @@ def mirror_latest(
     capture_id: str,
     assets: Optional[dict] = None,
 ) -> str:
+    with _latest_lock:
+        return _write_latest(annotated_path, context_md, capture_id, assets)
+
+
+def refresh_latest_if_current(annotated_path, context_md, capture_id, assets=None):
+    """Do not let a review of an older capture replace a newly saved mirror."""
+    with _latest_lock:
+        try:
+            manifest = json.loads(Path(latest_dir(), 'manifest.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        if manifest.get('capture_id') == capture_id:
+            _write_latest(annotated_path, context_md, capture_id, assets)
+
+
+def _write_latest(annotated_path, context_md, capture_id, assets=None) -> str:
     """Write the latest capture to ``~/.arrow/latest/`` for file-path access.
 
     Returns the directory path.

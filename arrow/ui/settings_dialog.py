@@ -31,6 +31,7 @@ class CaptureSettingsDialog(QDialog):
         self.shortcut_input.setPlaceholderText('ctrl+space or ctrl+shift')
         form.addRow('Capture shortcut', self.shortcut_input)
         self.language_combo = QComboBox()
+        self.language_combo.addItem('Auto · Hindi / English', 'auto')
         self.language_combo.addItem('English (India)', 'en-IN')
         self.language_combo.addItem('Hindi (India)', 'hi-IN')
         self.language_combo.addItem('English (United States)', 'en-US')

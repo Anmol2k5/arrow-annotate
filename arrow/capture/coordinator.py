@@ -21,6 +21,16 @@ class CaptureCoordinator(QObject):
         overlay.finish_requested.connect(self.finish)
         overlay.cancel_requested.connect(self.cancel)
         voice.finished.connect(self._on_voice_finished)
+        if hasattr(voice, 'phase_changed'):
+            voice.phase_changed.connect(self._on_voice_phase)
+
+    def _on_voice_phase(self, phase, capture_id):
+        if capture_id != self._capture_id:
+            return
+        if phase == 'transcribing' and self._phase == 'finishing':
+            self.notch.set_status('Transcribing on this device… Your recording has finished; please wait.')
+        elif phase == 'recording' and self._phase == 'recording':
+            self.notch.set_status('Recording… Release your shortcut when you have finished speaking.')
 
     @property
     def busy(self):

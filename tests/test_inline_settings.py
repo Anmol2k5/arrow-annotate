@@ -119,7 +119,8 @@ def test_agents_probe_sign_in_and_refresh_only_after_login_exits(tmp_path, monke
     process.poll = lambda: 0
     panel._poll_logins()
     finish_probe()
-    assert 'Connected' in label.text()
+    assert 'CLI signed in' in label.text()
+    assert 'not checked' in panel.mcp_rows['Codex'][0].text()
     assert button.isEnabled()
     assert not panel._login_timer.isActive()
     app.processEvents()
@@ -181,6 +182,84 @@ def test_login_completion_during_a_status_probe_queues_a_fresh_check(tmp_path, m
     loop.exec()
     timer.stop()
     assert calls.count('Codex') == 2
-    assert 'Connected' in panel.agent_rows['Codex'][0].text()
+    assert 'CLI signed in' in panel.agent_rows['Codex'][0].text()
     app.processEvents()
+    notch.close()
+
+
+def test_one_click_mcp_setup_keeps_account_status_separate(tmp_path, monkeypatch):
+    from arrow.providers import connection
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    panel.agent_rows['Codex'][0].setText('CLI signed in')
+    calls = []
+    def setup(name):
+        calls.append('configure')
+        return connection.ProviderMCPStatus(name, True, True, None, 'Registered')
+    def probe(name):
+        calls.append('probe')
+        return connection.ProviderMCPStatus(name, True, True, True, 'Local handshake passed')
+    monkeypatch.setattr(connection, 'configure_provider_mcp', setup)
+    monkeypatch.setattr(connection, 'probe_provider_mcp', probe)
+    panel._check_mcp('Codex', configure=True)
+    loop = QEventLoop()
+    panel.mcp_checked.connect(loop.quit)
+    QTimer.singleShot(1500, loop.quit)
+    if panel._mcp_busy:
+        loop.exec()
+    qt.processEvents()
+    assert calls == ['configure', 'probe']
+    assert 'local protocol verified' in panel.mcp_rows['Codex'][0].text()
+    assert panel.agent_rows['Codex'][0].text() == 'CLI signed in'
+    notch.close()
+
+
+def test_voice_download_ui_cancels_and_allows_retry(tmp_path, monkeypatch):
+    from arrow.speech import offline
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    started = Event()
+    def download(**kwargs):
+        kwargs['progress']({'phase': 'downloading', 'downloaded_bytes': 50, 'total_bytes': 100})
+        started.set()
+        assert kwargs['cancel_event'].wait(2)
+        raise offline.DownloadCancelled('Download cancelled. Retry is available.')
+    monkeypatch.setattr(offline, 'install_voice_model', download)
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    panel._install_voice_model()
+    assert started.wait(1)
+    qt.processEvents()
+    assert panel.voice_progress.value() == 50
+    panel._cancel_voice_download()
+    loop = QEventLoop()
+    panel.voice_model_finished.connect(loop.quit)
+    QTimer.singleShot(1500, loop.quit)
+    if panel._voice_installing:
+        loop.exec()
+    qt.processEvents()
+    assert not panel._voice_installing
+    assert panel.voice_model_button.isEnabled()
+    assert 'Retry' in panel.voice_model_status.text()
+    notch.close()
+
+
+def test_update_check_shows_notification_and_opens_no_browser_automatically(tmp_path, monkeypatch):
+    from arrow.core import updates
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(updates, 'check_for_update', lambda version: updates.UpdateResult('9.0.0', updates.RELEASES_URL, True))
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    panel._check_updates()
+    loop = QEventLoop()
+    panel.update_checked.connect(loop.quit)
+    QTimer.singleShot(1500, loop.quit)
+    if not panel.update_button.isEnabled():
+        loop.exec()
+    qt.processEvents()
+    assert '9.0.0' in panel.update_status.text() and 'available' in panel.update_status.text()
+    assert panel.update_button.isEnabled()
     notch.close()

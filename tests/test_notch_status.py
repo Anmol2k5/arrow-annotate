@@ -115,12 +115,12 @@ def test_format_change_request_renders_paste_ready_prompt():
         "constraints": ["Prefer normal layout flow."],
     }
     text = format_change_request(cr)
-    assert "**Intent:** Move element" in text
+    assert "**Intent:**" not in text
     assert "**Instruction:** Move this button here and make it wider" in text
     assert "**Source:** Buy" in text
     assert "**Destination:** Here" in text
-    assert "**Confidence:** 0.82" in text
-    assert "**Likely file:** src/components/Buy.tsx:12" in text
+    assert "confidence" not in text.lower()
+    assert "src/components/Buy.tsx:12" in text
     assert "Buy appears at Here." in text
     assert "Prefer normal layout flow." in text
 
@@ -145,7 +145,7 @@ def test_legacy_generic_anchor_labels_prefer_resolved_element_names():
     assert "**Destination:** Checkout" in text
 
 
-def test_format_change_request_exposes_missing_destination_and_inferences():
+def test_format_change_request_keeps_missing_destination_clear_without_diagnostics():
     from arrow.intent import CompilerInput, IntentCompiler
     from arrow.ui.notch import format_change_request
 
@@ -158,18 +158,18 @@ def test_format_change_request_exposes_missing_destination_and_inferences():
 
     text = format_change_request(cr)
 
-    assert "**Intent:** Move element" in text
+    assert "**Intent:**" not in text
     assert f"**Instruction:** {instruction}" in text
     assert "1 Source" in text
     assert "2 Destination" not in text
     assert "**Destination:**" in text
     assert "not provided" in text.lower()
-    assert "**Clarification required:** Yes" in text
+    assert "Ask for clarification" in text
     assert "before implementation" in text.lower()
-    assert "**Ambiguities:**" in text
-    assert "[blocking] destination" in text
-    assert "**Inferences (not confirmed facts):**" in text
-    assert "No repository file" in text
+    assert "**Ambiguities:**" not in text
+    assert any(a['field'] == 'destination' and a['severity'] == 'blocking' for a in cr['ambiguities'])
+    assert "**Inferences (not confirmed facts):**" not in text
+    assert "No repository file" not in text
 
 
 def test_format_change_request_uses_canonical_markers_with_resolved_names():
@@ -188,7 +188,7 @@ def test_format_change_request_uses_canonical_markers_with_resolved_names():
     assert "**Destination:** Checkout" in text
     assert "1 Source" in text
     assert "2 Destination" in text
-    assert "**Clarification required:** No" in text
+    assert "Clarification required" not in text
 
 
 def test_format_change_request_does_not_claim_markers_for_context_only_anchors():

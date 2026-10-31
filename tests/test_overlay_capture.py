@@ -178,7 +178,8 @@ def test_continuous_move_gesture_reaches_saved_image_crops_and_prompt(overlay, t
     )
     assert saved.getpixel((source_rect["x"], source_rect["y"] + source_rect["height"] // 2)) == (239, 68, 68)
     prompt = format_change_request(result.change_request)
-    assert "**Intent:** Move element" in prompt
+    assert instruction in prompt
+    assert "**Intent:**" not in prompt
     assert "1 Source" in prompt and "2 Destination" in prompt
     assert instruction in prompt
     # The reusable service renders exactly the same canonical exported scene.

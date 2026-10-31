@@ -60,8 +60,8 @@ def get_provider_setup_status(name: str) -> ProviderSetupStatus:
     status_args, _, _ = _details(name)
     provider = create_provider(name)
     if not provider.detect():
-        return ProviderSetupStatus(name, False, False, f"Install {name} to connect.")
-    unknown = ProviderSetupStatus(name, True, None, "Installed. Sign-in not confirmed; try Connect or update the CLI.")
+        return ProviderSetupStatus(name, False, False, f"Install {name} to sign in.")
+    unknown = ProviderSetupStatus(name, True, None, "Installed. Sign-in not confirmed; try Sign in or update the CLI.")
     try:
         command = provider._resolve_command([provider.cli_name, *status_args])
         result = subprocess.run(
@@ -79,7 +79,7 @@ def get_provider_setup_status(name: str) -> ProviderSetupStatus:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0,
         )
     except subprocess.TimeoutExpired:
-        return ProviderSetupStatus(name, True, None, "Sign-in check timed out. Try again or choose Connect.")
+        return ProviderSetupStatus(name, True, None, "Sign-in check timed out. Try again or choose Sign in.")
     except (OSError, RuntimeError, subprocess.SubprocessError):
         return unknown
 
@@ -87,7 +87,7 @@ def get_provider_setup_status(name: str) -> ProviderSetupStatus:
     if any(marker in output.lower() for marker in (
         "unknown command", "unrecognized subcommand", "unknown option", "unrecognized option", "unexpected argument",
     )):
-        return ProviderSetupStatus(name, True, None, "Update the CLI to check sign-in, or use Connect.")
+        return ProviderSetupStatus(name, True, None, "Update the CLI to check sign-in, or use Sign in.")
     authenticated = None
     if name == "Claude Code":
         try:
@@ -107,7 +107,7 @@ def get_provider_setup_status(name: str) -> ProviderSetupStatus:
             authenticated = False
     if authenticated is None:
         return unknown
-    message = "Connected." if authenticated else "Installed. Sign in to connect."
+    message = "Signed in." if authenticated else "Installed. Sign in to your account."
     return ProviderSetupStatus(name, True, authenticated, message)
 
 
@@ -120,7 +120,7 @@ def start_provider_login(name: str) -> subprocess.Popen:
     _, login_args, _ = _details(name)
     provider = create_provider(name)
     if not provider.detect():
-        raise RuntimeError(f"Install {name} before connecting.")
+        raise RuntimeError(f"Install {name} before signing in.")
     try:
         command = provider._resolve_command([provider.cli_name, *login_args])
         return subprocess.Popen(

@@ -9,11 +9,12 @@ can run `Arrow-Annotate-Setup-<version>-x64.exe`, install for their own account,
 and launch **Arrow Annotate** from Start. Hold **Ctrl+Space** to draw and speak;
 release to capture. The system tray provides settings, a quick guide, and Quit.
 
-Installer builds and a portable ZIP are produced by the
-[Windows installer workflow](https://github.com/Anmol2k5/arrow-annotate/actions/workflows/windows-installer.yml).
-Open a successful run and download its Windows artifact. Extract it and run
-`dist/artifacts/Arrow-Annotate-Setup-<version>-x64.exe`. A native Windows build must pass before an installer is ready to
-share. Settings and captures remain in `%USERPROFILE%\.arrow` after upgrades
+Download Setup or the portable ZIP from the
+[public releases page](https://github.com/Anmol2k5/arrow-annotate/releases).
+Version tags publish only after native Windows build, clipboard, MCP and installer
+checks pass. Builds are unsigned until a trusted signing identity is configured.
+Development builds remain available as artifacts of the
+[Windows installer workflow](https://github.com/Anmol2k5/arrow-annotate/actions/workflows/windows-installer.yml). Settings and captures remain in `%USERPROFILE%\.arrow` after upgrades
 or uninstall. Codex/Claude CLI installation and sign-in are optional separate steps.
 
 See [installer and distribution instructions](docs/windows-installer.md) for
@@ -63,21 +64,35 @@ destination ask for clarification in the copied prompt.
 
 Open **⚙ Settings** in the notch. Settings stay inside the notch, with
 **Capture**, **Agents**, and **General** tabs. Capture changes the held shortcut
-and speech language. **Ctrl+Shift** works as a two-key alternative. Fn is usually
+and speech language. **Auto · Hindi / English** detects mixed speech locally;
+explicit language choices remain available. Voice setup shows actual download
+progress, cancellation and retry. **Ctrl+Shift** works as a two-key alternative. Fn is usually
 handled by keyboard firmware, so it cannot be registered reliably. Preferences
 persist across restarts. If a chord conflicts with another application, choose
 another one in settings.
 
-For ChatGPT, click **Copy image + prompt**, paste to attach the image, then click
-**2 · Copy prompt** and paste again. The clipboard changes only when you click;
+Before the first copy or an agent handoff, **Review** stays inside the notch:
+zoom the exact saved handoff image, correct your instruction, and edit or exclude
+window text. **Retake** corrects the drawing. Save explicitly to copy or open the
+selected client. Prompt text starts with your words and numbered markers;
+confidence/intent diagnostics stay in structured capture JSON. Corrections apply
+to future exports, including the matching latest-file mirror; they cannot retract
+already-sent context. Connected MCP clients retain read access to saved captures.
+
+For ChatGPT, click **Copy image + prompt**, save the review, paste to attach the
+image, then click **2 · Copy prompt** and paste again. The clipboard changes only when you click;
 there is no timed overwrite. **General → Clipboard** also offers combined copying
 for apps that accept image and text together. Windows receives actual PNG image
 data, not a screenshot path. **Image only** and **Prompt only** remain available.
 
 In **Settings → Agents**, open the install guide if a CLI is missing, then choose
 **Connect** for Codex or Claude Code. Finish the official sign-in in its browser
-or CLI window; Arrow checks the result and shows **Connected** only when confirmed.
+or CLI window; Arrow checks the result and shows **CLI signed in** only when confirmed.
 **Refresh connections** detects newly installed CLIs and retries status checks.
+**Set up Arrow MCP** registers Arrow with the official CLI and tests a real local
+initialize/tools-list exchange; **Test MCP** retries it. Account sign-in and MCP
+registration/protocol status are separate. Conflicting MCP entries are preserved
+for you to review in the client.
 Choose your project repository in the same tab, then use **Codex** or **Claude
 Code** through **Open in agent**. Codex receives an image attachment; Claude
 receives access to the immutable context bundle and images through MCP/local files.
@@ -87,6 +102,13 @@ and data-processing policy.
 **Agents → Local MCP and REST** shows the shared local endpoint and copies an
 HTTP MCP connection configuration. Existing stdio clients still work. See the
 [local endpoint guide](docs/local-context-api.md) for Claude/Codex commands and REST.
+
+**General → App updates** checks official public releases on request and offers
+the release page; it never automatically downloads or runs an installer.
+
+For actual hardware/account validation, run the [guided Windows tests](docs/windows-interactive-testing.md).
+CI packaging success does not establish microphone quality, Hinglish accuracy,
+mixed-DPI alignment or a signed-in agent session.
 
 **General** also controls automatic expansion for capture updates and keeping
 the notch open. Existing screenshots retain their original pixels; make a new

@@ -52,7 +52,7 @@ def test_claude_authentication_uses_explicit_json_boolean(monkeypatch, probes, l
     status = setup.get_provider_setup_status('Claude Code')
     assert status.installed is True
     assert status.authenticated is logged_in
-    assert ('connected' if logged_in else 'sign in') in status.message.lower()
+    assert ('signed in' if logged_in else 'sign in') in status.message.lower()
     assert 'private@example.com' not in status.message
     command, options = calls[0]
     assert command == [executable, 'auth', 'status', '--json']

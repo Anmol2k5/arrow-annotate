@@ -63,3 +63,20 @@ Responses have `Cache-Control: no-store`.
 The optional live `arrow_look` MCP tool also requires the screenshot capability.
 No default automatic forwarding to Agentation occurs. When you explicitly open
 or connect an AI client, its own account and processing policy applies.
+
+## Review and setup in 0.4
+
+New captures are reviewed inside the notch before the first clipboard export or
+client handoff. The review shows the saved optimized PNG used by MCP/CLI export,
+with zoom, editable instruction and editable/excludable window text. Retake
+corrects drawings. Changes affect subsequent exports and the matching latest
+mirror; previous immutable bundles and already-sent content remain unchanged.
+A trusted connected MCP client can intentionally read saved captures directly;
+GUI review is not an access-control boundary for local MCP/REST reads.
+
+Agents settings separates CLI sign-in from MCP registration and local protocol
+verification. Set up Arrow MCP uses the official CLI to add only Arrow and then
+checks initialize/tools-list. Conflicting registrations are left for the user to
+review. Restart an already-running client to load its new persistent configuration.
+Auto Hindi/English is available in Capture settings; download setup reports actual
+bytes and supports cancellation/retry without replacing a working model on failure.

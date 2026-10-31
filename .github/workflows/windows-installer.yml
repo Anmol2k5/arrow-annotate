@@ -45,6 +45,12 @@ jobs:
           "INNO_COMPILER=$Compiler" >> $env:GITHUB_ENV
       - name: Test and build Windows executables, installer and portable zip
         shell: pwsh
+        # Only a pushed release tag may receive signing credentials. PR builds
+        # (including same-repository PRs) always exercise the unsigned path.
+        env:
+          ARROW_SIGN_PFX_BASE64: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_SIGN_PFX_BASE64 || '' }}
+          ARROW_SIGN_PFX_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_SIGN_PFX_PASSWORD || '' }}
+          ARROW_SIGN_CERT_THUMBPRINT: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.WINDOWS_SIGN_CERT_THUMBPRINT || '' }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item build/windows -ItemType Directory -Force | Out-Null
@@ -77,3 +83,54 @@ jobs:
             build/windows/pyinstaller/windows/warn-windows.txt
           if-no-files-found: warn
           retention-days: 30
+
+  publish-release:
+    # Publication is authorized only by pushing a version tag, after every
+    # frozen-app/MCP/install/uninstall check in build-and-test has passed.
+    needs: build-and-test
+    if: github.repository == 'Anmol2k5/arrow-annotate' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: Arrow-Annotate-Windows-x64-${{ github.run_number }}
+          path: verified-build
+      - name: Verify final release files and checksums
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          version="${RELEASE_TAG#v}"
+          cd verified-build/dist/artifacts
+          test -s "Arrow-Annotate-Setup-$version-x64.exe"
+          test -s "Arrow-Annotate-Portable-$version-x64.zip"
+          test -s build-provenance.json
+          test -s build-requirements.txt
+          test -s third-party-manifest.json
+          sha256sum --check SHA256SUMS.txt
+          signing=$(python -c 'import json; print(json.load(open("build-provenance.json"))["signing"])')
+          case "$signing" in
+            unsigned) echo 'Windows artifacts are unsigned. Windows may display an unknown-publisher warning.' > release-notes.txt ;;
+            trusted-authenticode-verified) echo 'The application executables and Setup have trusted, timestamped Authenticode signatures.' > release-notes.txt ;;
+            *) echo 'Unknown signing provenance'; exit 1 ;;
+          esac
+          echo '' >> release-notes.txt
+          echo 'Download Setup for a per-user installation, or extract the entire portable zip. Compare SHA256SUMS.txt before running. Updates and uninstall preserve user settings and captures.' >> release-notes.txt
+      - name: Publish public GitHub Release downloads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd verified-build/dist/artifacts
+          gh release create "$RELEASE_TAG" \
+            --verify-tag --title "Arrow Annotate $RELEASE_TAG" --latest \
+            --notes-file release-notes.txt \
+            Arrow-Annotate-Setup-*-x64.exe Arrow-Annotate-Portable-*-x64.zip \
+            SHA256SUMS.txt build-provenance.json build-requirements.txt third-party-manifest.json

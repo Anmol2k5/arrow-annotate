@@ -31,8 +31,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
-    QInputDialog,
-    QLabel,
+        QLabel,
     QLayout,
     QMessageBox,
     QPushButton,
@@ -42,7 +41,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from arrow.intent.compiler import recompile_change_request
 from arrow.providers.runner import build_run_request, create_provider
 from arrow.server.server import AgentServer
 from arrow.storage.settings import get_project_dir, get_ui_preferences, set_project_dir
@@ -287,94 +285,13 @@ INTENT_LABELS = {
 
 
 def _anchor_label(anchor: dict) -> str:
-    """Best human-readable label for a source/destination anchor."""
-    if not anchor:
-        return ""
-    label = anchor.get("label")
-    generic_labels = {"source", "destination", "1 source", "2 destination", "selected region",
-                      "current element", "move here"}
-    if label and label.strip().lower() not in generic_labels:
-        return label
-    element = anchor.get("element") or {}
-    return (
-        element.get("name")
-        or element.get("text")
-        or element.get("selector")
-        or anchor.get("selector")
-        or (anchor.get("geometry") and "selected region")
-        or label
-        or ""
-    )
+    from arrow.intent.prompt_builder import anchor_label
+    return anchor_label(anchor)
 
 
 def format_change_request(cr: dict) -> str:
-    """Render a compiled change request as a paste-ready prompt (Codex/Claude/IDE)."""
-    if not cr:
-        return ""
-    intent = INTENT_LABELS.get(cr.get("normalized_intent", ""), cr.get("normalized_intent", "unknown"))
-
-    lines = ["## Arrow change request", ""]
-    lines.append(f"**Intent:** {intent}")
-    if cr.get("summary") and cr["summary"].strip() != (cr.get("raw_user_request") or "").strip():
-        lines.append(f"**Summary:** {cr['summary']}")
-    if cr.get("raw_user_request"):
-        lines.append(f"**Instruction:** {cr['raw_user_request']}")
-
-    source = cr.get("source") or {}
-    destination = cr.get("destination") or {}
-    src_label = _anchor_label(source)
-    dst_label = _anchor_label(destination)
-    if src_label:
-        lines.append(f"**Source:** {src_label}")
-        if source.get("screenshot_marker") == "1 Source":
-            lines.append("**Source marker in annotated screenshot:** 1 Source")
-    if dst_label:
-        lines.append(f"**Destination:** {dst_label}")
-        if destination.get("screenshot_marker") == "2 Destination":
-            lines.append("**Destination marker in annotated screenshot:** 2 Destination")
-    elif cr.get("normalized_intent") == "move_element":
-        lines.append("**Destination:** Not provided; mark or describe the target.")
-    if cr.get("move_relationship"):
-        lines.append(f"**Move relationship:** {cr['move_relationship']}")
-    if cr.get("confidence") is not None:
-        lines.append(f"**Confidence:** {round(cr['confidence'], 2)}")
-    clarification_required = cr.get("clarification_required", False)
-    lines.append(f"**Clarification required:** {'Yes' if clarification_required else 'No'}")
-    if clarification_required:
-        lines.append("Clarification required before implementation.")
-
-    files = cr.get("likely_files") or []
-    if files:
-        f = files[0]
-        loc = f["source_file"]
-        if f.get("source_line") is not None:
-            loc += f":{f['source_line']}"
-        lines.append(f"**Likely file:** {loc}")
-
-    if cr.get("requested_changes"):
-        lines.extend(["", "**Requested changes:**", ""])
-        for op in cr["requested_changes"]:
-            inferred = " (inferred)" if op.get("inferred") else ""
-            lines.append(f"- {op.get('description', '')}{inferred}")
-
-    for title, key in (("Acceptance criteria", "acceptance_criteria"), ("Constraints", "constraints")):
-        items = cr.get(key) or []
-        if items:
-            lines.extend(["", f"**{title}:**", ""])
-            lines.extend(f"- {c}" for c in items)
-
-    if cr.get("ambiguities"):
-        lines.extend(["", "**Ambiguities:**", ""])
-        for ambiguity in cr["ambiguities"]:
-            lines.append(f"- [{ambiguity.get('severity', 'warning')}] {ambiguity.get('field', '')}: "
-                         f"{ambiguity.get('description', '')}")
-
-    if cr.get("inferences"):
-        lines.extend(["", "**Inferences (not confirmed facts):**", ""])
-        for inference in cr["inferences"]:
-            lines.append(f"- {inference.get('field', '')}: {inference.get('reason', '')}")
-
-    return "\n".join(lines)
+    from arrow.intent.prompt_builder import format_prompt
+    return format_prompt(cr)
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +464,7 @@ class ScreenshotThumbnail(QFrame):
 
         edit_row = QHBoxLayout()
         edit_row.setSpacing(6)
-        edit_row.addWidget(self._action_button("Edit", self._edit_instruction))
+        edit_row.addWidget(self._action_button("Review", self._edit_instruction))
         self._combined_copy_button = self._action_button("Copy image + prompt", self._copy_request)
         edit_row.addWidget(self._combined_copy_button)
         v.addLayout(edit_row)
@@ -590,11 +507,11 @@ class ScreenshotThumbnail(QFrame):
     def _fill_intent_content(self):
         """(Re)build the chip, confidence and info section from the current request."""
         cr = self._change_request
-        self._chip_lbl.setText(INTENT_LABELS.get(cr.get("normalized_intent", ""), "Unknown"))
+        self._chip_lbl.setText("Capture context")
 
         conf = cr.get("confidence")
         self._conf_lbl.setText(f"{round(conf * 100)}%" if conf is not None else "")
-        self._conf_lbl.setVisible(conf is not None)
+        self._conf_lbl.hide()
 
         while self._info_v.count():
             item = self._info_v.takeAt(0)
@@ -629,34 +546,28 @@ class ScreenshotThumbnail(QFrame):
         self._info_v.addStretch()
 
     def _edit_instruction(self):
-        """Let the user edit the instruction, recompile, and persist the result."""
-        current = self._change_request.get("raw_user_request", "")
-        text, ok = QInputDialog.getText(self, "Edit instruction", "Instruction:", text=current)
-        if not ok:
-            return
+        review = getattr(self.window(), 'show_capture_review', None)
+        if review:
+            review(self)
 
-        new_instruction = text.strip()
-        new_cr = recompile_change_request(self._change_request, new_instruction)
-        if new_cr is None:
-            return
+    def _apply_review(self, record):
+        self._change_request = record.change_request or {}
+        self._text = record.annotation_text or ''
+        self._text_lbl.setText(self._text)
+        self._awaiting_prompt_copy = False
+        self._combined_copy_button.setText('Copy image + prompt')
+        self._fill_intent_content()
 
-        self._change_request = new_cr.to_dict()
-        if new_instruction:
-            self._text = new_instruction
-            self._text_lbl.setText(new_instruction)
-
-        capture_id = self._change_request.get("capture_id")
+    def _export_payload(self):
+        from arrow.context.capture_bundle import build_capture_bundle
+        capture_id = self._change_request.get('capture_id')
         if capture_id:
             try:
-                from arrow.storage.capture_store import CaptureStore
-                CaptureStore().update_change_request(
-                    capture_id, self._change_request,
-                    annotation_text=new_instruction or None,
-                )
-            except Exception as e:
-                log.error("Failed to persist edited change request: %s", e)
-
-        self._fill_intent_content()
+                bundle = build_capture_bundle(capture_id)
+                return bundle.prompt_text, bundle.annotated_path or self._path
+            except LookupError:
+                pass  # Legacy/unpersisted cards still offer their own image/text.
+        return format_change_request(self._change_request) or self._text, self._path
 
     @staticmethod
     def _action_button(text, slot):
@@ -684,21 +595,28 @@ class ScreenshotThumbnail(QFrame):
         except Exception:
             return False
 
-    def _copy_request(self, mode='both'):
+    def _copy_request(self, mode='both', reviewed=False):
         # QPushButton.clicked may pass a checked boolean.
         if isinstance(mode, bool):
             mode = 'both'
-        text = format_change_request(self._change_request) or self._text
+        review = getattr(self.window(), 'show_capture_review', None)
+        if review and not reviewed:
+            from arrow.storage.capture_store import CaptureStore
+            record = CaptureStore().get(self._change_request.get('capture_id'))
+            if record is not None and not record.capture_context.get('review', {}).get('instruction_reviewed'):
+                review(self, copy_mode=mode)
+                return
+        text, image_path = self._export_payload()
         if mode == 'both' and get_ui_preferences()['clipboard_mode'] == 'two_step':
             try:
                 if not self._awaiting_prompt_copy:
-                    copy_capture(text, self._path, mode='image')
+                    copy_capture(text, image_path, mode='image')
                     self._awaiting_prompt_copy = True
                     self._combined_copy_button.setText('2 · Copy prompt')
                     self._action_status.setText('1/2 · Image copied. Paste it into ChatGPT to attach it, '
                                                 'then click “2 · Copy prompt” and paste again.')
                 else:
-                    copy_capture(text, self._path, mode='text')
+                    copy_capture(text, image_path, mode='text')
                     self._awaiting_prompt_copy = False
                     self._combined_copy_button.setText('Copy image + prompt')
                     self._action_status.setText('2/2 · Prompt copied. Paste it alongside the attached image.')
@@ -706,7 +624,7 @@ class ScreenshotThumbnail(QFrame):
                 self._action_status.setText(str(exc))
             return
         try:
-            copy_capture(text, self._path, mode=mode)
+            copy_capture(text, image_path, mode=mode)
         except ValueError as exc:
             self._action_status.setText(str(exc))
             return
@@ -718,11 +636,16 @@ class ScreenshotThumbnail(QFrame):
         }
         self._action_status.setText(messages[mode])
 
-    def _send_to_provider(self, name: str):
+    def _send_to_provider(self, name: str, reviewed=False):
         """Send the compiled change request straight to Codex / Claude Code."""
         cr = self._change_request
         if not cr:
             return
+        if not reviewed:
+            review = getattr(self.window(), 'show_capture_review', None)
+            if review:
+                review(self, send_to=name)
+                return
 
         request = build_run_request(
             cr.get("capture_id") or "",
@@ -1228,6 +1151,46 @@ class DynamicNotch(QWidget):
             y = ag.y() + TOP_OFFSET
             self._idle_rect = QRect(x, y, IDLE_W, IDLE_H)
             self.setGeometry(self._idle_rect)
+
+    def show_capture_review(self, card, send_to=None, copy_mode=None):
+        from arrow.ui.capture_review import CaptureReview
+        try:
+            review = CaptureReview(card._change_request.get('capture_id'))
+        except ValueError as error:
+            card._action_status.setText(str(error))
+            return
+        previous = getattr(self, '_review_view', None)
+        if previous is not None:
+            self._content_stack.removeWidget(previous)
+            previous.deleteLater()
+        self._review_view = review
+        self._content_stack.addWidget(review)
+        review.close_requested.connect(self.show_captures)
+        def saved(record):
+            card._apply_review(record)
+            if send_to:
+                self.show_captures()
+                card._send_to_provider(send_to, reviewed=True)
+            elif copy_mode:
+                self.show_captures()
+                card._copy_request(copy_mode, reviewed=True)
+        review.saved.connect(saved)
+        def retake():
+            self.show_captures()
+            self._screens_view._highlight()
+        review.retake_requested.connect(retake)
+        if send_to:
+            review.save_button.setText(f'Save and open {send_to}')
+        elif copy_mode:
+            review.save_button.setText('Save and copy ' + {'both': 'image + prompt', 'image': 'image', 'text': 'prompt'}[copy_mode])
+        self._settings_open = True  # Keep the notch open while the user reviews.
+        if self._auto_collapse_timer is not None:
+            self._auto_collapse_timer.stop()
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.expand()
+        self._content_stack.setCurrentWidget(review)
+        self.raise_()
+        self.activateWindow()
 
     def _calc_expanded_rect(self):
         screen = QApplication.primaryScreen()

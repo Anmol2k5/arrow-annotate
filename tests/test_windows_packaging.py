@@ -89,3 +89,47 @@ def test_protocol_smoke_rejects_startup_banners_and_saves_diagnostics(tmp_path):
     assert not result["success"]
     assert "unexpected startup banner" in result["stdout"]
     assert "JSONDecodeError" in result["error"]
+
+
+def test_release_publication_is_tag_only_and_depends_on_native_checks():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/windows-installer.yml").read_text(encoding="utf-8")
+    build, publish = workflow.split("  publish-release:", 1)
+    assert "permissions:\n  contents: read" in build
+    assert "needs: build-and-test" in publish
+    assert "github.repository == 'Anmol2k5/arrow-annotate'" in publish
+    assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish
+    assert "contents: write" not in build
+    assert "contents: write" in publish
+    assert "./scripts/test-windows-install.ps1" in build
+    assert "sha256sum --check SHA256SUMS.txt" in publish
+    assert "gh release create" in publish and "--verify-tag" in publish
+    for name in ("SHA256SUMS.txt", "build-provenance.json", "build-requirements.txt", "third-party-manifest.json"):
+        assert name in publish
+    for line in build.splitlines():
+        if "secrets.WINDOWS_SIGN_" in line:
+            assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in line
+    assert "secrets." not in publish
+
+
+def test_signing_precedes_archiving_and_hashing_and_requires_trusted_identity():
+    root = Path(__file__).resolve().parents[1]
+    build = (root / "scripts/build-windows.ps1").read_text(encoding="utf-8")
+    sign = (root / "scripts/sign-windows.ps1").read_text(encoding="utf-8")
+    app_sign = build.index("& ./scripts/sign-windows.ps1 -Paths @((Join-Path $Bundle")
+    inno = build.index('Invoke-Checked $InnoCompiler @("/DAppVersion=')
+    setup_sign = build.index("& ./scripts/sign-windows.ps1 -Paths @($Setup)")
+    archive = build.index("Compress-Archive")
+    hashes = build.index("Get-FileHash $File -Algorithm SHA256")
+    assert app_sign < inno < setup_sign < archive < hashes
+    assert '"unsigned"' in build
+    assert "ARROW_SIGN_CERT_THUMBPRINT" in sign
+    assert '$Signature.Status -ne "Valid"' in sign
+    assert "$Signature.SignerCertificate.Thumbprint -ne $ExpectedThumbprint" in sign
+    assert "$null -eq $Signature.TimeStamperCertificate" in sign
+    assert "/fd SHA256 /tr $TimestampServer /td SHA256" in sign
+    assert "verify /pa /all /tw" in sign
+    assert "-DeleteKey" in sign
+    assert "Remove-Item $TemporaryPfx -Force" in sign
+    assert "/p $" not in sign  # Password must not appear in signing-tool process arguments.
+    assert "New-SelfSignedCertificate" not in sign

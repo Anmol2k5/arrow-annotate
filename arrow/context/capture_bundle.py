@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from arrow.intent.prompt_builder import format_prompt, window_text_markdown
+
 
 @dataclass(frozen=True)
 class CaptureBundle:
@@ -72,13 +74,11 @@ def build_capture_bundle(capture_id: str, db_path=None) -> CaptureBundle:
     annotated = assets.get('agent-annotated') or assets.get('annotated')
     context = directory / 'capture.json'
     prompt = directory / 'prompt.md'
-    text = (f"# Arrow capture {capture_id}\n\n"
-            f"{metadata['current_instruction']}\n\n"
-            "Use the stored capture context below. Screenshot coordinates are visual evidence; "
-            "preserve normal responsive layout. If the request needs clarification, ask before changing code.\n\n"
+    text = (format_prompt({**request, 'raw_user_request': metadata['current_instruction']}) + '\n'
             f"Annotated image: {annotated or 'not recorded'}\n\n"
             f"MCP: call arrow_get_capture_bundle with capture_id={capture_id!r} to retrieve this exact capture and image.\n\n"
-            "```json\n" + json.dumps(metadata, indent=2, ensure_ascii=False) + "\n```\n")
+            f"Complete structured context: {context}\n"
+            + window_text_markdown(metadata['capture_context'].get('window_context', {})))
     write_atomic(context, json.dumps(metadata, indent=2, ensure_ascii=False).encode('utf-8'))
     write_atomic(prompt, text.encode('utf-8'))
     with get_db_connection(db_path) as conn:

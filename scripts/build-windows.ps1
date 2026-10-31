@@ -87,12 +87,25 @@ $Freeze = & $BuildPython -m pip freeze --all
 if ($LASTEXITCODE -ne 0) { throw "pip freeze failed" }
 $Freeze | Set-Content (Join-Path $Artifacts "build-requirements.txt") -Encoding utf8
 Copy-Item (Join-Path $Resources "THIRD-PARTY-NOTICES/manifest.json") (Join-Path $Artifacts "third-party-manifest.json")
+# Sign the executables before Inno copies them and before the portable archive.
+& ./scripts/sign-windows.ps1 -Paths @((Join-Path $Bundle "ArrowAnnotate.exe"), (Join-Path $Bundle "ArrowMCP.exe"))
 Invoke-Checked $InnoCompiler @("/DAppVersion=$Version", "/DSourceDir=$Bundle", "/DOutputDir=$Artifacts", "packaging/windows-installer.iss")
+$Setup = Join-Path $Artifacts "Arrow-Annotate-Setup-$Version-x64.exe"
+& ./scripts/sign-windows.ps1 -Paths @($Setup)
+$SigningConfigured = -not [string]::IsNullOrWhiteSpace($env:ARROW_SIGN_PFX_BASE64)
+@{
+    version = $Version
+    signing = $(if ($SigningConfigured) { "trusted-authenticode-verified" } else { "unsigned" })
+    signed_targets = $(if ($SigningConfigured) { @("ArrowAnnotate.exe", "ArrowMCP.exe", [System.IO.Path]::GetFileName($Setup)) } else { @() })
+    source_repository = "https://github.com/Anmol2k5/arrow-annotate"
+    source_commit = $env:GITHUB_SHA
+    workflow_run = $env:GITHUB_RUN_ID
+} | ConvertTo-Json | Set-Content (Join-Path $Artifacts "build-provenance.json") -Encoding utf8
 $Portable = Join-Path $Artifacts "Arrow-Annotate-Portable-$Version-x64.zip"
 if (Test-Path $Portable) { Remove-Item $Portable -Force }
 Compress-Archive -Path $Bundle -DestinationPath $Portable -CompressionLevel Optimal
 $ReleaseFiles = @(
-    (Join-Path $Artifacts "Arrow-Annotate-Setup-$Version-x64.exe"),
+    $Setup,
     $Portable
 )
 $Sums = foreach ($File in $ReleaseFiles) {

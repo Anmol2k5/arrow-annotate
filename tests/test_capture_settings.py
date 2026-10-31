@@ -10,7 +10,7 @@ from arrow.ui.settings_dialog import CaptureSettingsDialog
 def test_capture_preferences_default_without_config(tmp_path, monkeypatch):
     monkeypatch.setenv('ARROW_HOME', str(tmp_path))
     assert settings.get_capture_shortcut() == 'ctrl+space'
-    assert settings.get_speech_language() == 'en-IN'
+    assert settings.get_speech_language() == 'auto'
 
 
 def test_capture_preferences_round_trip_preserves_selected_project(tmp_path, monkeypatch):
@@ -29,7 +29,7 @@ def test_invalid_persisted_capture_values_use_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv('ARROW_HOME', str(tmp_path))
     (tmp_path / 'config.json').write_text(json.dumps({'capture_shortcut': [], 'speech_language': None}))
     assert settings.get_capture_shortcut() == 'ctrl+space'
-    assert settings.get_speech_language() == 'en-IN'
+    assert settings.get_speech_language() == 'auto'
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def test_dialog_restores_defaults(qt_app):
     dialog = CaptureSettingsDialog('alt+a', 'hi-IN')
     restore = next(button for button in dialog.findChildren(QPushButton) if 'default' in button.text().lower())
     restore.click()
-    assert dialog.values() == ('ctrl+space', 'en-IN')
+    assert dialog.values() == ('ctrl+space', 'auto')
     dialog.close()
 
 

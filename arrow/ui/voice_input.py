@@ -15,8 +15,9 @@ class VoiceInput(QObject):
     error = pyqtSignal(str, str)
     finished = pyqtSignal(str, str, str)
     listening_changed = pyqtSignal(bool)
+    phase_changed = pyqtSignal(str, str)
 
-    def __init__(self, language: str = 'en-IN'):
+    def __init__(self, language: str = 'auto'):
         super().__init__()
         self.language = language
         self._listening = False
@@ -65,6 +66,8 @@ class VoiceInput(QObject):
     def stop_listening(self):
         """Cancel recording or transcription and discard this generation."""
         with self._state_lock:
+            if self._active:
+                self.phase_changed.emit('idle', self.current_capture_id)
             self._generation += 1
             self._active = False
             self._finish_requested.set()
@@ -80,6 +83,7 @@ class VoiceInput(QObject):
                 return
             self._set_listening(False)
             self._active = False
+            self.phase_changed.emit('idle', capture_id)
             # Publish exactly once, while holding the generation guard. Qt
             # delivers these signals to GUI slots on the GUI thread.
             if error:
@@ -105,6 +109,7 @@ class VoiceInput(QObject):
                         if not self._is_current(generation):
                             return
                         self._set_listening(True)
+                        self.phase_changed.emit('recording', capture_id)
                     while not finish_requested.is_set():
                         frame = source.stream.read(source.CHUNK)
                         if not frame:
@@ -120,6 +125,10 @@ class VoiceInput(QObject):
             if not frames:
                 error = 'No audio recorded'
             else:
+                with self._state_lock:
+                    if not self._is_current(generation):
+                        return
+                    self.phase_changed.emit('transcribing', capture_id)
                 transcript = transcribe_local(audio, language)
                 if not transcript:
                     error = 'Could not understand audio'

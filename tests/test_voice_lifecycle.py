@@ -121,6 +121,8 @@ def test_finish_returns_while_transcribing_and_reports_recording_stopped(monkeyp
 
     install_speech(monkeypatch, [source], recognize)
     voice = VoiceInput()
+    phases = []
+    voice.phase_changed.connect(lambda *args: phases.append(args))
     completed, _, _, _ = collect(voice)
     voice.start_listening('capture')
     assert source.reading.wait(1)
@@ -130,11 +132,14 @@ def test_finish_returns_while_transcribing_and_reports_recording_stopped(monkeyp
     try:
         assert not voice.is_listening
         assert completed == []
+        qt_app.processEvents()
+        assert phases == [('recording', 'capture'), ('transcribing', 'capture')]
         voice.finish_listening()
     finally:
         release.set()
         join(voice, qt_app)
     assert completed == [('dictated text', '', 'capture')]
+    assert phases[-1] == ('idle', 'capture')
 
 
 def test_old_voice_worker_does_not_cancel_new_recording(monkeypatch, qt_app):
@@ -174,6 +179,8 @@ def test_cancel_during_transcription_discards_stale_result(monkeypatch, qt_app):
 
     install_speech(monkeypatch, [old, new], recognize)
     voice = VoiceInput()
+    phases = []
+    voice.phase_changed.connect(lambda *args: phases.append(args))
     completed, results, _, states = collect(voice)
     voice.start_listening('old')
     old_thread = voice._thread
@@ -181,18 +188,23 @@ def test_cancel_during_transcription_discards_stale_result(monkeypatch, qt_app):
     voice.finish_listening()
     old.frames.put(b'old')
     assert transcribing.wait(1)
+    qt_app.processEvents()
     voice.stop_listening()
     voice.start_listening('new')
     assert new.reading.wait(1)
     release.set()
     old_thread.join(1)
     assert voice.is_listening
+    qt_app.processEvents()
+    assert phases[-1] == ('recording', 'new')
     voice.finish_listening()
     new.frames.put(b'new')
     join(voice, qt_app)
     assert completed == [('new', '', 'new')]
     assert results == [('new', 'new')]
     assert states == [True, False, True, False]
+    assert phases == [('recording', 'old'), ('transcribing', 'old'), ('idle', 'old'),
+                      ('recording', 'new'), ('transcribing', 'new'), ('idle', 'new')]
 
 
 @pytest.mark.parametrize('failure, expected', [

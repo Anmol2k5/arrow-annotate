@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -35,6 +36,9 @@ class SettingsPanel(QWidget):
     agents_checked = pyqtSignal(object)
     agent_check_failed = pyqtSignal(str)
     voice_model_finished = pyqtSignal(str)
+    voice_model_progress = pyqtSignal(object)
+    mcp_checked = pyqtSignal(str, object)
+    update_checked = pyqtSignal(object)
 
     def __init__(self, save_capture, parent=None):
         super().__init__(parent)
@@ -43,6 +47,9 @@ class SettingsPanel(QWidget):
         self._refresh_pending = False
         self._agent_statuses = {}
         self._login_processes = {}
+        self._mcp_busy = set()
+        self._voice_installing = False
+        self._voice_cancel = threading.Event()
         self.setObjectName('settingsPanel')
         self.setStyleSheet('''
             #settingsPanel { background: transparent; }
@@ -102,6 +109,10 @@ class SettingsPanel(QWidget):
         self.agents_checked.connect(self._apply_agent_statuses)
         self.agent_check_failed.connect(self._show_agent_check_failure)
         self.voice_model_finished.connect(self._voice_model_complete)
+        self.voice_model_progress.connect(self._show_voice_progress)
+        self.mcp_checked.connect(self._apply_mcp_status)
+        self.update_checked.connect(self._show_update_result)
+        QApplication.instance().aboutToQuit.connect(self._voice_cancel.set)
         self._login_timer = QTimer(self)
         self._login_timer.setInterval(1000)
         self._login_timer.timeout.connect(self._poll_logins)
@@ -135,7 +146,7 @@ class SettingsPanel(QWidget):
         card.addWidget(self.shortcut_input)
         card.addWidget(self._label('Speech language'))
         self.language_combo = QComboBox()
-        for title, value in [('English (India)', 'en-IN'), ('Hindi (India)', 'hi-IN'), ('English (US)', 'en-US')]:
+        for title, value in [('Auto · Hindi / English', 'auto'), ('English (India)', 'en-IN'), ('Hindi (India)', 'hi-IN'), ('English (US)', 'en-US')]:
             self.language_combo.addItem(title, value)
         self.language_combo.setCurrentIndex(max(0, self.language_combo.findData(settings.get_speech_language())))
         card.addWidget(self.language_combo)
@@ -161,15 +172,31 @@ class SettingsPanel(QWidget):
         self.voice_model_button = QPushButton('Repair voice model' if voice_model_ready() else 'Download voice model')
         self.voice_model_button.clicked.connect(self._install_voice_model)
         voice.addWidget(self.voice_model_button)
+        self.voice_progress = QProgressBar()
+        self.voice_progress.setRange(0, 100)
+        self.voice_progress.hide()
+        voice.addWidget(self.voice_progress)
+        self.voice_cancel_button = QPushButton('Cancel download')
+        self.voice_cancel_button.clicked.connect(self._cancel_voice_download)
+        self.voice_cancel_button.hide()
+        voice.addWidget(self.voice_cancel_button)
 
     def _install_voice_model(self):
+        if self._voice_installing:
+            return
+        self._voice_installing = True
+        self._voice_cancel.clear()
         self.voice_model_button.setEnabled(False)
+        self.voice_cancel_button.show()
+        self.voice_cancel_button.setEnabled(True)
+        self.voice_progress.setRange(0, 0)
+        self.voice_progress.show()
         self.voice_model_status.setText('Downloading public model files… No recordings are sent. You can keep using typed captures.')
 
         def install():
-            from arrow.speech.offline import install_voice_model
             try:
-                install_voice_model(force=True)
+                from arrow.speech.offline import install_voice_model
+                install_voice_model(force=True, progress=self.voice_model_progress.emit, cancel_event=self._voice_cancel)
                 message = 'Model installed · ready for offline voice'
             except Exception as error:
                 message = f'Model setup failed: {error}. Retry or use typed captures.'
@@ -179,7 +206,26 @@ class SettingsPanel(QWidget):
                 pass
         threading.Thread(target=install, daemon=True).start()
 
+    def _cancel_voice_download(self):
+        self._voice_cancel.set()
+        self.voice_cancel_button.setEnabled(False)
+        self.voice_model_status.setText('Cancelling download… Existing installed model will be preserved.')
+
+    def _show_voice_progress(self, progress):
+        if self._voice_cancel.is_set():
+            return
+        downloaded, total = progress.get('downloaded_bytes', 0), progress.get('total_bytes')
+        if total:
+            self.voice_progress.setRange(0, 100)
+            self.voice_progress.setValue(min(100, int(downloaded * 100 / total)))
+        self.voice_model_status.setText(
+            f"{progress.get('phase', 'downloading').title()} · {downloaded / 1024**2:.1f} MB"
+            + (f' / {total / 1024**2:.1f} MB' if total else ''))
+
     def _voice_model_complete(self, message):
+        self._voice_installing = False
+        self.voice_cancel_button.hide()
+        self.voice_progress.hide()
         from arrow.speech.offline import voice_model_ready
         self.voice_model_button.setText('Repair voice model' if voice_model_ready() else 'Download voice model')
         self.voice_model_button.setEnabled(True)
@@ -202,6 +248,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._label('Connect your installed CLI using its own sign-in. '
                                     'Arrow does not store passwords or API keys.'))
         self.agent_rows = {}
+        self.mcp_rows = {}
         for name in ('Codex', 'Claude Code'):
             card = self._card(layout, name, 'Sign in once, then send captures with their annotated image.')
             # Keep status separate so refreshing does not reconstruct controls.
@@ -217,6 +264,17 @@ class SettingsPanel(QWidget):
             buttons.addWidget(connect)
             card.addLayout(buttons)
             self.agent_rows[name] = (status, connect)
+            mcp_status = self._label('MCP: not checked. Account sign-in is separate.')
+            card.addWidget(mcp_status)
+            mcp_buttons = QHBoxLayout()
+            configure = QPushButton('Set up Arrow MCP')
+            configure.clicked.connect(lambda checked=False, provider=name: self._check_mcp(provider, configure=True))
+            test = QPushButton('Test MCP')
+            test.clicked.connect(lambda checked=False, provider=name: self._check_mcp(provider))
+            mcp_buttons.addWidget(configure)
+            mcp_buttons.addWidget(test)
+            card.addLayout(mcp_buttons)
+            self.mcp_rows[name] = (mcp_status, configure, test)
         self.refresh_agents_button = QPushButton('Refresh connections')
         self.refresh_agents_button.clicked.connect(self.refresh_agents)
         layout.addWidget(self.refresh_agents_button)
@@ -272,6 +330,37 @@ class SettingsPanel(QWidget):
         from arrow.providers.setup import get_provider_install_url
         QDesktopServices.openUrl(QUrl(get_provider_install_url(name)))
 
+    def _check_mcp(self, name, configure=False):
+        if name in self._mcp_busy:
+            return
+        self._mcp_busy.add(name)
+        label, setup, test = self.mcp_rows[name]
+        setup.setEnabled(False)
+        test.setEnabled(False)
+        label.setText('MCP: configuring and checking local protocol…' if configure else 'MCP: checking registration and local protocol…')
+        def check():
+            from arrow.providers.connection import ProviderMCPStatus, configure_provider_mcp, probe_provider_mcp
+            try:
+                result = configure_provider_mcp(name) if configure else probe_provider_mcp(name)
+                if configure and result.registered:
+                    result = probe_provider_mcp(name)
+            except Exception:
+                result = ProviderMCPStatus(name, False, None, None, 'MCP setup could not be checked. Retry after updating the CLI.')
+            try:
+                self.mcp_checked.emit(name, result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=check, daemon=True).start()
+
+    def _apply_mcp_status(self, name, result):
+        self._mcp_busy.discard(name)
+        label, setup, test = self.mcp_rows[name]
+        setup.setEnabled(True)
+        test.setEnabled(True)
+        registered = 'registered' if result.registered else 'not registered' if result.registered is False else 'registration unknown'
+        protocol = 'local protocol verified' if result.protocol_verified else 'local protocol not verified'
+        label.setText(f'MCP: {registered} · {protocol}. {result.message}')
+
     def refresh_agents(self):
         if self._checking:
             self._refresh_pending = True
@@ -323,7 +412,7 @@ class SettingsPanel(QWidget):
             label, button = self.agent_rows[status.name]
             if status.name in self._login_processes:
                 continue
-            state = ('Connected' if status.authenticated is True else 'Sign in required'
+            state = ('CLI signed in' if status.authenticated is True else 'Sign in required'
                      if status.installed and status.authenticated is False else 'Sign-in status unknown'
                      if status.installed else 'CLI not installed')
             label.setText(state if status.authenticated is True else f'{state} · {status.message}')
@@ -394,6 +483,42 @@ class SettingsPanel(QWidget):
         layout.addWidget(save)
         self.general_status = self._label('')
         layout.addWidget(self.general_status)
+        from arrow.launcher import app_version
+        card = self._card(layout, 'App updates', f'Installed version: {app_version()}. Check public releases when you choose.')
+        self.update_status = self._label('')
+        card.addWidget(self.update_status)
+        self.update_button = QPushButton('Check for updates')
+        self.update_button.clicked.connect(self._check_updates)
+        card.addWidget(self.update_button)
+        self.release_button = QPushButton('Open public releases')
+        self._release_url = 'https://github.com/Anmol2k5/arrow-annotate/releases'
+        self.release_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self._release_url)))
+        card.addWidget(self.release_button)
+
+    def _check_updates(self):
+        self.update_button.setEnabled(False)
+        self.update_status.setText('Checking official GitHub releases…')
+        def check():
+            from arrow.core.updates import UpdateCheckError, check_for_update
+            from arrow.launcher import app_version
+            try:
+                result = check_for_update(app_version())
+            except UpdateCheckError as error:
+                result = str(error)
+            try:
+                self.update_checked.emit(result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=check, daemon=True).start()
+
+    def _show_update_result(self, result):
+        self.update_button.setEnabled(True)
+        if isinstance(result, str):
+            self.update_status.setText(result)
+            return
+        self._release_url = result.url
+        self.update_status.setText(f'Update {result.version} is available. Open the release page to review and download.'
+                                  if result.available else 'You are on the latest stable release.')
 
     def _save_general(self):
         try:
