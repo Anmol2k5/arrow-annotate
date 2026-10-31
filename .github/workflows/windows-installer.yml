@@ -120,6 +120,9 @@ jobs:
           esac
           echo '' >> release-notes.txt
           echo 'Download Setup for a per-user installation, or extract the entire portable zip. Compare SHA256SUMS.txt before running. Updates and uninstall preserve user settings and captures.' >> release-notes.txt
+          echo '' >> release-notes.txt
+          echo 'Native packaging/runtime checks passed. Real microphone/Hinglish accuracy, multi-monitor/DPI alignment and authenticated agent sessions still require interactive validation on your Windows desktop.' >> release-notes.txt
+          echo "[Run the guided Windows tests](https://github.com/Anmol2k5/arrow-annotate/blob/$RELEASE_TAG/docs/windows-interactive-testing.md)." >> release-notes.txt
       - name: Publish public GitHub Release downloads
         shell: bash
         env:

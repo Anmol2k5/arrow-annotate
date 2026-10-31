@@ -113,7 +113,9 @@ Start-Process .\index.html
    for each desired client, configure Arrow MCP and Test connection. Confirm
    registration and local protocol separately. Restart existing client sessions
    after registration. Never count these actions as a completed agent session.
-2. Make a fresh capture of **only the synthetic page**. Put marker 1 on the blue
+2. Hide private windows on **all monitors** first. Arrow saves the virtual desktop;
+   drawing a region annotates it rather than cropping other screens out. Use only
+   the synthetic page and blank/clean backgrounds for this test. Make a fresh capture. Put marker 1 on the blue
    button and review the image and window text before submitting. Set the current
    instruction to: “Marker 1 identifies the blue button. Explain how to put this
    button below the heading with sixteen pixels of spacing. Do not modify files.”
