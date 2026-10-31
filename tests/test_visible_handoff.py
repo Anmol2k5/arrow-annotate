@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from arrow.providers import handoff
@@ -7,14 +8,18 @@ from arrow.storage.capture_store import CaptureStore
 from arrow.storage.schemas import CaptureRecord
 
 
-def test_codex_opens_interactive_with_image_and_per_session_mcp(tmp_path, monkeypatch):
+@pytest.mark.parametrize('bound', [True, False])
+def test_codex_opens_interactive_with_image_and_per_session_mcp(tmp_path, monkeypatch, bound):
     monkeypatch.setenv('ARROW_HOME', str(tmp_path / 'state'))
     image = tmp_path / 'image.png'
     Image.new('RGB', (20, 20), 'red').save(image)
     db = str(tmp_path / 'captures.db')
     CaptureStore(db).add(CaptureRecord(id='one', timestamp='now', screenshot_path=str(image),
         annotation_text='move', change_request={'capture_id': 'one', 'raw_user_request': 'move',
-            'project': {'repository_root': str(tmp_path)}, 'assets': {'annotated': str(image)}}))
+            'project': {'repository_root': str(tmp_path)} if bound else {}, 'assets': {'annotated': str(image)}}))
+    if not bound:
+        from arrow.storage.settings import set_project_dir
+        set_project_dir(str(tmp_path))
     launched = []
     provider = SimpleNamespace(detect=lambda: True, _resolve_command=lambda args: args)
     monkeypatch.setattr(handoff, 'create_provider', lambda name: provider)
@@ -28,7 +33,8 @@ def test_codex_opens_interactive_with_image_and_per_session_mcp(tmp_path, monkey
     assert options['cwd'] == str(tmp_path) and options['shell'] is False
     assert result.status == 'started'
     assert 'completed' not in result.message.lower()
-    assert not (tmp_path / 'state' / 'config.json').exists()
+    if bound:
+        assert not (tmp_path / 'state' / 'config.json').exists()
 
 
 def test_status_remains_available_without_hostname_dns(monkeypatch):
