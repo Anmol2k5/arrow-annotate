@@ -26,7 +26,7 @@ image hash and old-data migration. Verify new launch/quit/relaunch in that home.
 - [x] Old-version fixture and actual installer-upgrade persistence checks.
 - [x] Source tests/lint/types, independent review, native Windows CI and live checks
   where available; preserve precise pending statuses for inaccessible accounts.
-- [ ] Publish only after required native lifecycle/upgrade checks pass.
+- [x] Publish only after required native lifecycle/upgrade checks pass.
 
 Failure focus: old capture returned instead of ID, agent never calls MCP, image
 code leaked in prompt, wrong/empty reply, stale receipts, CLI timeout/cleanup,
@@ -53,3 +53,9 @@ installed desktop lifecycles, the actual 0.4.1 upgrade/storage/MCP roundtrip and
 uninstall preservation. The first native run exposed a real asynchronous child
 termination race plus two Windows path assertions; the rerun verifies the fix.
 Physical tray clicks and authenticated model answers remain separate/unverified.
+
+Published [v0.4.2](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.2)
+after [release run 22](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41274863470)
+repeated all Windows checks and verified final checksums. Public Setup, portable
+archive, checksum and provenance links confirmed. The release is unsigned;
+trusted signing still requires the user's future signing identity.

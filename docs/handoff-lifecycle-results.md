@@ -1,7 +1,14 @@
 # Agent handoff and Windows lifecycle results
 
-Candidate version: **0.4.2**. Code commit: `63fdc68`.
+Released version: **0.4.2**. Code commit: `63fdc68`.
 Verified on 1 November 2026.
+
+Download [v0.4.2](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.2).
+[Release run 22](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41274863470)
+repeated the Windows checks below, verified final SHA-256 checksums and published
+Setup, portable, checksum and provenance files. Public asset links were checked
+after publication. The installer remains unsigned; trusted signing support is
+prepared, but no signing identity is configured.
 
 [Native Windows run 21](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41274408192)
 passed the required source, native, packaging and runtime checks:
