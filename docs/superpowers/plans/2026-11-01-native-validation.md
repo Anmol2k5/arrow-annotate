@@ -25,3 +25,13 @@ Local verification: 636 Python tests passed, two native Windows tests skipped;
 4 browser tests passed, Ruff and mypy passed. Independent review found no important
 issues. Actual new native desktop/TTS/inference results are pending the pushed
 Windows workflow; no success claim for these is made from Linux skips/fakes.
+
+First native run [41260195577](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41260195577)
+passed real desktop/UIA/capture checks at both imposed Qt scales and built the
+installer. The new real source speech check then failed in both language modes:
+PyAV 19.0.2 removed `av.open(metadata_errors=...)`, still used by faster-whisper
+1.2.1. This was independently reproduced locally with its real decoder and a
+small PCM WAV, without weights/network. The same regression passes with PyAV
+18.1.0. The speech extra now constrains PyAV below 19, and a model-free native
+PCM-decoder test catches this incompatibility in the ordinary source suite.
+The corrected native speech run is pending; no recognition success is claimed yet.

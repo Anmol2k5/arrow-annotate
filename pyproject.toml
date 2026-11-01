@@ -25,7 +25,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy", "pytest"]
-speech = ["faster-whisper>=1.1,<2"]
+# PyAV 19 removed metadata_errors, which Faster Whisper's decoder still passes.
+speech = ["faster-whisper>=1.1,<2", "av>=11,<19"]
 
 [tool.setuptools.packages.find]
 include = ["arrow", "arrow.*"]

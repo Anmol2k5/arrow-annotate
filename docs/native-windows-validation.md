@@ -87,3 +87,13 @@ in Setup or the portable ZIP.
 Synthetic English TTS passing demonstrates packaged local inference, not live
 microphone acquisition, natural Hinglish quality, silence handling or general
 recognition accuracy. Keep those interactive results separate.
+
+## Decoder compatibility regression
+
+`tests/test_audio_decoder_compatibility.py` exercises Faster Whisper's real PyAV
+PCM decoder without any model or network. This caught an actual PyAV 19 API change:
+`av.open(metadata_errors=...)` is no longer accepted, while Faster Whisper 1.2.1
+still supplies it. Speech installs constrain PyAV below 19; PyAV 18.1.0 passes the
+real decoder regression. A user encountering this error should update Arrow (or
+reinstall the source speech extra); downloading the voice model again does not
+repair an incompatible decoder runtime. This test does not use a fake decoder.
