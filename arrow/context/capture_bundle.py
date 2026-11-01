@@ -68,7 +68,9 @@ def build_capture_bundle(capture_id: str, db_path=None) -> CaptureBundle:
     assets = {}
     for key, (source, content) in images.items():
         target = directory / (key + '.png')
-        if not target.exists():
+        # The bundle directory is content-addressed, but another app/client can
+        # still alter its files. Never hand off stale or corrupted cached pixels.
+        if not target.is_file() or target.read_bytes() != content:
             write_atomic(target, content)
         assets[key] = str(target)
     annotated = assets.get('agent-annotated') or assets.get('annotated')

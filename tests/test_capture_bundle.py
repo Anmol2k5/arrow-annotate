@@ -139,3 +139,31 @@ def test_scene_round_trips_and_legacy_capture_does_not_invent_original_speech(tm
     assert bundle.metadata["original_voice_transcript"] is None
     assert bundle.metadata["data_provenance"]["original_voice_transcript"] == "not_recorded"
     assert bundle.annotated_path is None
+
+
+@pytest.mark.parametrize('asset', ['annotated', 'agent-annotated'])
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_mcp_repairs_altered_cached_images_before_handoff(tmp_path, storage, asset, corrupt):
+    store, repo, db = storage
+    cap = record(tmp_path)
+    store.add(cap)
+    original = Path(cap.screenshot_path).read_bytes()
+    first = build_capture_bundle(cap.id, db)
+    cached = Path(first.assets[asset])
+    if corrupt:
+        cached.write_bytes(b'truncated image')
+    else:
+        Image.new('RGB', (40, 30), 'blue').save(cached)
+    reply = dispatch({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                      'params': {'name': 'arrow_get_capture_bundle', 'arguments': {'capture_id': cap.id}}},
+                     ArrowTools(repo), ResourceProvider(repo))
+    assert 'error' not in reply
+    assert not reply['result'].get('isError')
+    content = reply['result']['content']
+    packet = json.loads(next(part['text'] for part in content if part['type'] == 'text'))
+    image = next(part for part in content if part['type'] == 'image')
+    assert cached.read_bytes() == original, 'Cached images must match the persisted capture before reuse'
+    assert base64.b64decode(image['data']) == original
+    assert packet['metadata']['capture_id'] == cap.id
+    assert packet['directory'] == first.directory
+    assert Path(cap.screenshot_path).read_bytes() == original
