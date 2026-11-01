@@ -273,6 +273,9 @@ def main(startup_observer=None):
                     pass
 
     coordinator = CaptureCoordinator(session_manager, overlay, voice, notch, snapshot, on_ready)
+    microphone_panel = notch._settings_view.microphone_panel
+    microphone_panel.can_start_test = lambda: not coordinator.busy
+    coordinator.capture_starting.connect(microphone_panel.cancel_test)
 
     def begin_capture():
         if not coordinator.busy and not QApplication.activeModalWidget():

@@ -101,6 +101,26 @@ def set_capture_preferences(shortcut: str, language: str) -> None:
     _save(data)
 
 
+def _valid_microphone_selection(value) -> bool:
+    return (isinstance(value, dict) and set(value) == {'name', 'host_api'}
+            and all(isinstance(value[key], str) and value[key].strip() for key in ('name', 'host_api')))
+
+
+def get_microphone_selection() -> dict | None:
+    """Stable input description, or None for the system default."""
+    value = _load().get('microphone_selection')
+    return dict(value) if isinstance(value, dict) and _valid_microphone_selection(value) else None
+
+
+def set_microphone_selection(selection: dict | None) -> None:
+    """Save only an exact name/host API description, never a volatile index."""
+    if selection is not None and not _valid_microphone_selection(selection):
+        raise ValueError('Choose a microphone name and host API, or System default.')
+    data = _load()
+    data['microphone_selection'] = dict(selection) if selection is not None else None
+    _save(data)
+
+
 def get_ui_preferences() -> dict:
     data = _load()
     mode = data.get('clipboard_mode', 'two_step')
@@ -125,4 +145,5 @@ __all__ = [
     "config_dir", "config_path", "get_project_dir", "set_project_dir",
     "get_capture_shortcut", "get_speech_language", "set_capture_preferences",
     "get_ui_preferences", "set_ui_preferences",
+    "get_microphone_selection", "set_microphone_selection",
 ]

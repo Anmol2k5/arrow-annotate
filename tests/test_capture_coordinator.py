@@ -133,3 +133,17 @@ def test_pipeline_setup_failure_is_visible_and_allows_retry():
     assert manager.active_session.state == CaptureState.FAILED
     assert not coordinator.busy
     assert any('invalid annotation' in str(event) for event in events)
+
+
+def test_capture_start_interrupts_microphone_test_before_opening_production_voice():
+    coordinator, manager, voice, _, events = setup_capture()
+    test = {'recording': True}
+    def cancel_test():
+        test['recording'] = False
+    coordinator.capture_starting.connect(cancel_test)
+    def open_microphone(capture_id):
+        assert not test['recording'], 'Microphone test must release ownership first'
+        voice.started.append(capture_id)
+    voice.start_listening = open_microphone
+    coordinator.start()
+    assert voice.started == [manager.active_session.capture_id]

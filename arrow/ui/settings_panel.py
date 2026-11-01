@@ -119,6 +119,7 @@ class SettingsPanel(QWidget):
         self.update_checked.connect(self._show_update_result)
         QApplication.instance().aboutToQuit.connect(self._voice_cancel.set)
         QApplication.instance().aboutToQuit.connect(self._cancel_live_checks)
+        self.close_requested.connect(self.microphone_panel.cancel_test)
         self._login_timer = QTimer(self)
         self._login_timer.setInterval(1000)
         self._login_timer.timeout.connect(self._poll_logins)
@@ -168,6 +169,11 @@ class SettingsPanel(QWidget):
         card.addLayout(buttons)
         self.capture_status = self._label('')
         card.addWidget(self.capture_status)
+        microphone = self._card(layout, 'Microphone', 'Choose an input and test your actual microphone before capturing. '
+                                'The test uses the speech language selected above.')
+        from arrow.ui.microphone_panel import MicrophonePanel
+        self.microphone_panel = MicrophonePanel(language=self.language_combo.currentData)
+        microphone.addWidget(self.microphone_panel)
         voice = self._card(layout, 'On-device voice',
                            'Audio is transcribed locally using Whisper. Download the multilingual model once '
                            '(about 150 MB); recording and recognition never upload audio. You can also type in the overlay.')
@@ -606,6 +612,8 @@ class SettingsPanel(QWidget):
         self.general_status.setText('Preferences saved.')
 
     def select_tab(self, name):
+        if name != 'Capture':
+            self.microphone_panel.cancel_test()
         names = list(self.tab_buttons)
         self.pages.setCurrentIndex(names.index(name))
         for title, button in self.tab_buttons.items():

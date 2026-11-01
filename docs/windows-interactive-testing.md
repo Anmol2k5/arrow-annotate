@@ -47,6 +47,23 @@ otherwise: **zero does not establish completed hardware testing**.
 
 ## Microphone, pauses and Hinglish
 
+Before the capture tests, open **Settings → Capture → Microphone**. Refresh the
+inputs, choose your actual microphone, and select **Use microphone**. Start
+**Test microphone** and wait for Recording before speaking. The meter reflects
+real PCM input. Stop and transcribe, or let this test stop after ten seconds.
+The test opens the actual production recorder and decodes locally; it creates no
+capture, screenshot, audio file or saved transcript and sends nothing to an agent.
+Normal shortcut-held captures have no ten-second limit.
+
+Try “Blue button ko heading ke neeche rakho, spacing sixteen pixels.” Use
+**Auto · Hindi / English** and inspect the words rather than assuming a test pass
+from a moving level meter. Hindi may appear in Devanagari. Quiet input, recognition
+accuracy, Windows privacy denial and actual USB hotplug require this physical
+desktop check; mocked PortAudio and synthetic English inference are insufficient.
+An unavailable or ambiguous selected input must report a problem instead of
+silently recording another microphone. Switch to System default if two inputs
+have indistinguishable names and host APIs.
+
 1. Launch `ArrowAnnotate.exe`. In inline Settings → Capture, explicitly download
    the offline voice model if needed and choose automatic Hindi/English. Wait
    for the download to finish. This setup action is separate from diagnostics.

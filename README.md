@@ -39,6 +39,13 @@ weights during a capture. No account or cloud API key is required by Arrow.
 Typed instructions work without a model or microphone. Optional Agentation
 forwarding is disabled unless `ARROW_AGENTATION_ENABLED=1` is explicitly set.
 
+In **Settings → Capture → Microphone**, refresh inputs, choose your microphone
+and select **Use microphone**. **Test microphone** shows its input level and a
+local transcript; stop manually or let the ten-second test finish. Test audio
+and text are not saved or sent. For Hinglish, choose **Auto · Hindi / English**
+and check the recognized words. Normal push-to-talk recordings continue until
+you release the shortcut; the ten-second limit applies only to the setup test.
+
 ## Capture and send
 
 Arrow rests as a slim rounded pill at the top center of the primary screen.

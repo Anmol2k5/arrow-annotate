@@ -58,6 +58,11 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
                             set_status=lambda *a: None, refresh_screenshots=lambda: None,
                             auto_expand_briefly=lambda: None, isVisible=lambda: True,
                             hide=lambda: None, setToolTip=lambda *a: None)
+    microphone = SimpleNamespace(cancelled=0)
+    def cancel_microphone_test():
+        microphone.cancelled += 1
+    microphone.cancel_test = cancel_microphone_test
+    notch._settings_view = SimpleNamespace(microphone_panel=microphone)
     overlay = SimpleNamespace(selection_complete=Signal(), finish_requested=Signal(),
                               cancel_requested=Signal(), show_overlay=lambda: None, hide=lambda: None)
     overlay.hide_overlay = lambda: overlay.selection_complete.emit(SimpleNamespace(
@@ -74,7 +79,10 @@ def run_fake_application(monkeypatch, tmp_path, fail_screenshot=True, replace_se
             pass
 
         def exec(self):
+            assert microphone.can_start_test()
             notch.on_highlight_requested()
+            assert microphone.cancelled == 1
+            assert not microphone.can_start_test()
             notch.on_highlight_requested()
             if switch_project:
                 notch.on_project_selected(switch_project)

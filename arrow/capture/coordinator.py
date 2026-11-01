@@ -1,7 +1,7 @@
 """Join release-time screenshot capture with asynchronous speech recognition."""
 import logging
 
-from PyQt6.QtCore import QObject
+from PyQt6.QtCore import QObject, pyqtSignal
 
 from arrow.capture.session import CaptureState
 
@@ -9,6 +9,8 @@ log = logging.getLogger(__name__)
 
 
 class CaptureCoordinator(QObject):
+    capture_starting = pyqtSignal()
+
     def __init__(self, manager, overlay, voice, notch, snapshot, on_ready):
         super().__init__()
         self.manager, self.overlay, self.voice, self.notch = manager, overlay, voice, notch
@@ -27,7 +29,9 @@ class CaptureCoordinator(QObject):
     def _on_voice_phase(self, phase, capture_id):
         if capture_id != self._capture_id:
             return
-        if phase == 'transcribing' and self._phase == 'finishing':
+        if phase == 'opening' and self._phase == 'recording':
+            self.notch.set_status('Opening microphone… Wait for Recording before speaking.')
+        elif phase == 'transcribing' and self._phase == 'finishing':
             self.notch.set_status('Transcribing on this device… Your recording has finished; please wait.')
         elif phase == 'recording' and self._phase == 'recording':
             self.notch.set_status('Recording… Release your shortcut when you have finished speaking.')
@@ -43,6 +47,7 @@ class CaptureCoordinator(QObject):
     def start(self):
         if self.busy:
             return
+        self.capture_starting.emit()
         session = self.manager.start_session()
         self._capture_id = session.capture_id
         self._frame, self._speech = None, None
