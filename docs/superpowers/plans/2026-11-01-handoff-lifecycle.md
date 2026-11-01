@@ -24,7 +24,7 @@ image hash and old-data migration. Verify new launch/quit/relaunch in that home.
 - [x] CLI/inline diagnostics entry point with explicit account usage and no auto task.
 - [x] Native desktop lifecycle smoke against the production startup path.
 - [x] Old-version fixture and actual installer-upgrade persistence checks.
-- [ ] Source tests/lint/types, independent review, native Windows CI and live checks
+- [x] Source tests/lint/types, independent review, native Windows CI and live checks
   where available; preserve precise pending statuses for inaccessible accounts.
 - [ ] Publish only after required native lifecycle/upgrade checks pass.
 
@@ -45,6 +45,11 @@ fixture. Cancel live workers and allow cleanup on tray Quit. Default desktop
 smoke suppresses an inherited real database override, restores the environment,
 and requires a fresh process if data-path-caching modules were already imported.
 
-Source verification: 702 Python tests passed, 3 native Windows checks skipped on
+Source verification: 704 Python tests passed, 3 native Windows checks skipped on
 Linux; 4 browser tests passed. Ruff, mypy and dependency consistency passed.
-Native installer/lifecycle/upgrade verification remains pending the Windows job.
+Native Windows [run 21](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41274408192)
+passed source/native checks, frozen/installed speech, two portable and two
+installed desktop lifecycles, the actual 0.4.1 upgrade/storage/MCP roundtrip and
+uninstall preservation. The first native run exposed a real asynchronous child
+termination race plus two Windows path assertions; the rerun verifies the fix.
+Physical tray clicks and authenticated model answers remain separate/unverified.
