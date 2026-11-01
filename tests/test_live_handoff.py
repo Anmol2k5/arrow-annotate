@@ -211,7 +211,8 @@ def test_codex_state_override_stays_in_synthetic_home(tmp_path):
     with pytest.raises(ValueError, match='inside the temporary fixture'):
         live_check._command(provider, tmp_path, fixture, {'sqlite_home': str(tmp_path.parent)})
     live_check._command(provider, tmp_path, fixture, {'sqlite_home': str(tmp_path / 'state')})
-    assert str(tmp_path / 'state') in ' '.join(provider.command)
+    override = next(argument for argument in provider.command if argument.startswith('sqlite_home='))
+    assert json.loads(override.split('=', 1)[1]) == str(tmp_path / 'state')
     assert hashlib.sha256((tmp_path / 'sample.png').read_bytes()).hexdigest() == fixture['image_sha256']
 
 
@@ -289,9 +290,17 @@ def test_windows_job_waits_for_all_descendants_before_closing_handle(monkeypatch
     active = iter([1, 1, 0])
 
     class Kernel:
+        def OpenProcess(self, access, inherit, process_id):
+            events.append('opened-' + str(process_id))
+            return process_id
+
         def TerminateJobObject(self, handle, code):
             events.append('terminated')
             return True
+
+        def WaitForSingleObject(self, handle, timeout):
+            events.append('waited-' + str(handle))
+            return 0
 
         def QueryInformationJobObject(self, handle, kind, accounting, size, returned):
             accounting._obj.ActiveProcesses = next(active)
@@ -299,14 +308,16 @@ def test_windows_job_waits_for_all_descendants_before_closing_handle(monkeypatch
             return True
 
         def CloseHandle(self, handle):
-            events.append('closed')
+            events.append('closed-' + str(handle))
             return True
 
     job = windows_job.WindowsJob.__new__(windows_job.WindowsJob)
     job.kernel, job.handle = Kernel(), 123
+    monkeypatch.setattr(job, '_process_ids', lambda handle, deadline: [456, 789])
     monkeypatch.setattr(windows_job.time, 'sleep', lambda seconds: None)
     job.close()
-    assert events == ['terminated', 'active-1', 'active-1', 'active-0', 'closed']
+    assert events == ['opened-456', 'opened-789', 'terminated', 'waited-456', 'waited-789',
+                      'active-1', 'active-1', 'active-0', 'closed-456', 'closed-789', 'closed-123']
     assert job.handle is None
 
 
@@ -329,9 +340,54 @@ def test_windows_job_cleanup_deadline_closes_handle_and_reports_failure(monkeypa
     monkeypatch.setattr(windows_job.time, 'monotonic', lambda: next(clock))
     job = windows_job.WindowsJob.__new__(windows_job.WindowsJob)
     job.kernel, job.handle = Kernel(), 123
+    monkeypatch.setattr(job, '_process_ids', lambda handle, deadline: [])
     with pytest.raises(TimeoutError, match='cleanup deadline'):
         job.close()
     assert closed == [123] and job.handle is None
+
+
+def test_windows_job_process_list_reads_pointer_sized_ids():
+    class Kernel:
+        def QueryInformationJobObject(self, handle, kind, listing, size, returned):
+            assert kind == 3
+            listing._obj.NumberOfAssignedProcesses = 2
+            listing._obj.NumberOfProcessIdsInList = 2
+            listing._obj.ProcessIdList[0] = 456
+            listing._obj.ProcessIdList[1] = 789
+            return True
+
+    job = windows_job.WindowsJob.__new__(windows_job.WindowsJob)
+    job.kernel, job.handle = Kernel(), 123
+    assert job._process_ids(123, time.monotonic() + 5) == [456, 789]
+
+
+def test_windows_job_does_not_return_for_inactive_but_unsignaled_process(monkeypatch):
+    closed = []
+
+    class Kernel:
+        def OpenProcess(self, access, inherit, process_id):
+            return 456
+
+        def TerminateJobObject(self, handle, code):
+            return True
+
+        def WaitForSingleObject(self, handle, timeout):
+            assert handle == 456 and 0 <= timeout <= 5000
+            return 258
+
+        def QueryInformationJobObject(self, *arguments):
+            pytest.fail('Inactive accounting must not bypass an unsignaled process handle')
+
+        def CloseHandle(self, handle):
+            closed.append(handle)
+            return True
+
+    job = windows_job.WindowsJob.__new__(windows_job.WindowsJob)
+    job.kernel, job.handle = Kernel(), 123
+    monkeypatch.setattr(job, '_process_ids', lambda handle, deadline: [456])
+    with pytest.raises(TimeoutError, match='cleanup deadline'):
+        job.close()
+    assert closed == [456, 123]
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='requires native Windows Job Objects')

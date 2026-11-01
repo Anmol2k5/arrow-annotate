@@ -112,8 +112,8 @@ def test_isolated_smoke_never_migrates_inherited_external_database(tmp_path, pre
             from arrow.storage import database
             from arrow.storage.capture_store import CaptureStore
             CaptureStore()
-            observed['database'] = database.DB_PATH
-            observed['home'] = os.environ['ARROW_HOME']
+            observed['database'] = str(Path(database.DB_PATH).resolve())
+            observed['home'] = str(Path(os.environ['ARROW_HOME']).resolve())
             return 1
 
         launcher._run_desktop = initialize

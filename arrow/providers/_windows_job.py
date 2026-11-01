@@ -54,6 +54,8 @@ def _kernel32():
         'CreateJobObjectW': ([ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
         'SetInformationJobObject': ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
         'AssignProcessToJobObject': ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+        'OpenProcess': ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+        'WaitForSingleObject': ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
         'TerminateJobObject': ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
         'QueryInformationJobObject': ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
                                        wintypes.DWORD, ctypes.c_void_p], wintypes.BOOL),
@@ -117,13 +119,27 @@ class WindowsJob:
     def close(self):
         if self.handle:
             handle, self.handle = self.handle, None
+            processes = []
             try:
-                # Killing is asynchronous. Keep the handle open until the job
-                # has no active processes so fixture removal cannot race MCP
-                # handles still being released after the CLI exited.
+                deadline = time.monotonic() + 5
+                # Job accounting can reach zero before each process object is
+                # signaled. Retain actual process handles *before* termination
+                # so venv launchers and MCP descendants are fully reaped too.
+                for process_id in self._process_ids(handle, deadline):
+                    process = self.kernel.OpenProcess(0x00100000, False, process_id)  # SYNCHRONIZE
+                    if process:
+                        processes.append(process)
+                    elif ctypes.get_last_error() != 87:  # INVALID_PARAMETER: already exited
+                        raise ctypes.WinError(ctypes.get_last_error())
                 if not self.kernel.TerminateJobObject(handle, 1):
                     raise ctypes.WinError(ctypes.get_last_error())
-                deadline = time.monotonic() + 5
+                for process in processes:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    result = self.kernel.WaitForSingleObject(process, remaining_ms)
+                    if result == 258:  # WAIT_TIMEOUT
+                        raise TimeoutError('Windows validation process exceeded the cleanup deadline')
+                    if result != 0:  # WAIT_OBJECT_0
+                        raise ctypes.WinError(ctypes.get_last_error())
                 while True:
                     accounting = _Accounting()
                     if not self.kernel.QueryInformationJobObject(
@@ -135,8 +151,28 @@ class WindowsJob:
                         raise TimeoutError('Windows validation job did not stop before the cleanup deadline')
                     time.sleep(.01)
             finally:
+                for process in processes:
+                    self.kernel.CloseHandle(process)
                 if not self.kernel.CloseHandle(handle):
                     raise ctypes.WinError(ctypes.get_last_error())
+
+    def _process_ids(self, handle, deadline):
+        capacity = 16
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Windows validation process snapshot exceeded the cleanup deadline')
+
+            class ProcessList(ctypes.Structure):
+                _fields_ = [('NumberOfAssignedProcesses', wintypes.DWORD),
+                            ('NumberOfProcessIdsInList', wintypes.DWORD),
+                            ('ProcessIdList', ctypes.c_size_t * capacity)]
+
+            listing = ProcessList()
+            if self.kernel.QueryInformationJobObject(handle, 3, ctypes.byref(listing), ctypes.sizeof(listing), None):
+                return list(listing.ProcessIdList[:listing.NumberOfProcessIdsInList])
+            if ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                raise ctypes.WinError(ctypes.get_last_error())
+            capacity = max(capacity * 2, listing.NumberOfAssignedProcesses)
 
 
 def start_job_process(command, **options):
