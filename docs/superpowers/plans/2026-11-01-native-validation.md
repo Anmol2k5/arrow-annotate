@@ -13,7 +13,7 @@ voice privacy (no network inference, model download only explicit setup).
 - [x] Add a real Windows Qt/UIA/screenshot test at scale factors 1 and 1.5, checking
   frozen target ownership after an overlay appears and marker/image alignment.
 - [x] Verify source suite, lint/types, browser tests and native CI; review and push.
-- [ ] Publish a patch only after its Windows functional checks pass. Keep physical
+- [x] Publish a patch only after its Windows functional checks pass. Keep physical
   mic/Hinglish, mixed monitor scaling and real account sessions explicitly pending.
 
 Boundaries: new speech smoke command is opt-in and uses synthetic test audio in CI.
@@ -35,3 +35,11 @@ small PCM WAV, without weights/network. The same regression passes with PyAV
 18.1.0. The speech extra now constrains PyAV below 19, and a model-free native
 PCM-decoder test catches this incompatibility in the ordinary source suite.
 Corrected run [41261023249](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41261023249) passed actual synthetic-WAV transcription in English and auto modes through source, portable and installed runtimes, real desktop/UIA/capture checks at Qt scale 1 and 1.5, native PNG clipboard, frozen MCP protocol, and install/uninstall/data preservation. This validates synthetic English inference, not physical microphone or natural Hinglish accuracy.
+
+Public patch: [v0.4.1](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.1)
+was published by [tag run 41261555520](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41261555520)
+after repeating the native desktop/speech/install checks and verifying hashes.
+The release page returned HTTP 200 and exposes Setup, portable ZIP, checksums
+and provenance. It is unsigned, consistent with the user's unavailable signing
+identity. Physical microphone/natural Hinglish, physical mixed-DPI monitors and
+real authenticated agent sessions remain unverified.
