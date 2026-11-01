@@ -136,6 +136,9 @@ class CaptureReview(QWidget):
             record = save_review(self.capture_id, self.instruction.toPlainText(),
                 {role: editor.toPlainText() for role, editor in self.window_editors.items()},
                 self.include_text.isChecked(), store=self.store)
+        except ValueError as error:
+            self.status.setText(str(error))
+            return False
         except Exception:
             self.status.setText('Could not save this review. Check available disk space and try again; nothing has been sent.')
             return False

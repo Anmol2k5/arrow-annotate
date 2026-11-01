@@ -164,3 +164,22 @@ def test_copy_in_the_notch_requires_review_once_and_then_supports_the_second_ste
     assert notch._content_stack.currentWidget() is notch._screens_view
     notch.close()
     app.processEvents()
+
+
+def test_empty_review_instruction_reports_validation_error_and_never_completes(tmp_path):
+    from PyQt6.QtWidgets import QApplication
+
+    from arrow.ui.capture_review import CaptureReview
+    app = QApplication.instance() or QApplication([])
+    store = saved_capture(tmp_path)
+    review = CaptureReview('review', store=store)
+    completed = []
+    review.saved.connect(completed.append)
+    review.instruction.setPlainText('  ')
+    assert not review.save()
+    assert 'instruction' in review.status.text().lower()
+    assert 'disk' not in review.status.text().lower()
+    assert completed == []
+    assert store.get('review').annotation_text == 'Explain this'
+    review.close()
+    app.processEvents()

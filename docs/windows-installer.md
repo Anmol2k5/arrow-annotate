@@ -55,6 +55,16 @@ Smoke checks use `--smoke-test <report.json>`, verify the JSON `success` field, 
 
 Pushing `v<project version>` in the official repository publishes a public GitHub Release only after the build and every automated smoke/install/uninstall check succeeds. Branch pushes, pull requests and manual workflow runs only upload Actions artifacts. The publication job alone receives `contents: write`; build and PR jobs retain `contents: read`. Publication rechecks SHA-256 sums and includes Setup, the portable zip, `SHA256SUMS.txt`, `build-provenance.json`, `build-requirements.txt` and `third-party-manifest.json`. A tag/version mismatch or failed check prevents publication. No release or tag is created by local setup scripts. Interactive hardware/account validation remains a separate maintainer check.
 
+The native source lane additionally runs a visible Qt/UIA/desktop-capture test in
+fresh Windows processes with `QT_SCALE_FACTOR=1` and `1.5`. The install lane uses
+Windows TTS and explicitly cached test model weights to transcribe a real synthetic
+WAV in fixed English/auto modes through source, portable and installed runtimes.
+Inference runs with Python network connections blocked. Reports are uploaded;
+no screenshots, WAV recordings or model weights enter release artifacts. See
+[native validation scope](native-windows-validation.md). Model preparation is an
+explicit network setup step and requires public Hugging Face availability; live
+microphone, natural Hinglish and physical mixed-DPI monitor tests remain separate.
+
 ## Optional trusted signing
 
 Signing support is ready, but no trusted signing identity is supplied by this repository. Unsigned releases remain supported and are clearly labeled. Never use a self-signed certificate to imply a trusted publisher.

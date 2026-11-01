@@ -66,7 +66,12 @@ jobs:
             Write-Host "::error title=Windows build failed::$Escaped"
             throw
           }
-      - name: Exercise frozen and installed apps, then uninstall
+      - name: Cache explicit offline speech test weights
+        uses: actions/cache@v4
+        with:
+          path: build/windows/voice-model-home/models
+          key: windows-whisper-base-v1-${{ hashFiles('arrow/speech/offline.py') }}
+      - name: Exercise frozen speech, installed apps, then uninstall
         shell: pwsh
         run: ./scripts/test-windows-install.ps1
       - name: Preserve installers, hashes, provenance and smoke reports
@@ -80,6 +85,7 @@ jobs:
             build/windows/ci-build.log
             build/windows/source-tests.xml
             build/windows/native-clipboard.xml
+            build/windows/native-ui-*.xml
             build/windows/pyinstaller/windows/warn-windows.txt
           if-no-files-found: warn
           retention-days: 30

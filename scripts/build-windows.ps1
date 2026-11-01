@@ -61,6 +61,15 @@ try {
     try {
         $env:QT_QPA_PLATFORM = "windows"
         Invoke-Checked $BuildPython @("-m", "pytest", "-q", "tests/test_capture_clipboard.py::test_native_windows_clipboard_exposes_png_and_unicode_text", "--junitxml", "build/windows/native-clipboard.xml")
+        $PreviousQtScale = $env:QT_SCALE_FACTOR
+        try {
+            foreach ($Scale in @("1", "1.5")) {
+                $env:QT_SCALE_FACTOR = $Scale
+                Invoke-Checked $BuildPython @("-m", "pytest", "-q", "tests/test_native_windows_capture.py::test_native_windows_frozen_context_and_physical_capture", "--junitxml", "build/windows/native-ui-$Scale.xml")
+            }
+        } finally {
+            $env:QT_SCALE_FACTOR = $PreviousQtScale
+        }
     } finally {
         $env:QT_QPA_PLATFORM = "offscreen"
     }

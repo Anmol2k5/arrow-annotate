@@ -63,10 +63,15 @@ def entrypoint(argv: list[str] | None = None) -> int:
     mode.add_argument('--mcp', action='store_true', help='Run the MCP stdio server (use ArrowMCP.exe when installed)')
     mode.add_argument('--smoke-test', metavar='REPORT', type=Path, help='Validate packaged dependencies and write a JSON report')
     mode.add_argument('--diagnostics', metavar='REPORT', type=Path, help='Check Windows readiness and write a report without saving screen/audio content')
+    mode.add_argument('--speech-smoke', nargs=2, metavar=('WAV', 'REPORT'), type=Path,
+                      help='Transcribe a synthetic WAV locally in English/auto modes; save diagnostic transcripts')
     parser.add_argument('--interactive', action='store_true', help='Confirm observed Windows checks during --diagnostics (requires console input)')
     args = parser.parse_args(argv)
     if args.interactive and not args.diagnostics:
         parser.error('--interactive requires --diagnostics REPORT')
+    if args.speech_smoke:
+        from arrow.speech.smoke import write_speech_report
+        return write_speech_report(*args.speech_smoke)
     if args.diagnostics:
         from arrow.diagnostics import write_report as write_diagnostics_report
         return write_diagnostics_report(args.diagnostics, interactive=args.interactive)

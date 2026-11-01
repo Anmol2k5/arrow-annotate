@@ -12,6 +12,9 @@ $DataDir = Join-Path $Temporary "User Data"
 New-Item $DataDir -ItemType Directory -Force | Out-Null
 $PreviousArrowHome = $env:ARROW_HOME
 $PreviousArrowDbPath = $env:ARROW_DB_PATH
+$ModelCache = Join-Path $Root "build/windows/voice-model-home"
+$SpeechWav = Join-Path $Temporary "synthetic-english.wav"
+$BuildPython = Join-Path $Root "build/windows/venv/Scripts/python.exe"
 $env:ARROW_HOME = $DataDir
 Remove-Item Env:ARROW_DB_PATH -ErrorAction SilentlyContinue
 $env:QT_QPA_PLATFORM = "offscreen"
@@ -20,6 +23,16 @@ function Invoke-Process {
     param([string]$File, [string[]]$Arguments)
     $Process = Start-Process $File -ArgumentList $Arguments -Wait -PassThru
     if ($Process.ExitCode -ne 0) { throw "$File failed with exit code $($Process.ExitCode)" }
+}
+
+function Write-SpeechFailure {
+    param([string]$Report)
+    if (Test-Path $Report) {
+        $Details = (Get-Content $Report -Raw).Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+        # This report contains only the synthetic test instruction and runtime
+        # errors, never a user's microphone recording or provider credentials.
+        Write-Host "::error title=Offline synthetic speech validation::$Details"
+    }
 }
 
 function Test-FrozenApp {
@@ -38,9 +51,45 @@ function Test-FrozenApp {
         (Join-Path $Root "scripts/windows_mcp_smoke.py") `
         (Join-Path $Bundle "ArrowMCP.exe") (Join-Path $Reports "$Label-mcp-protocol.json")
     if ($LASTEXITCODE -ne 0) { throw "Frozen MCP stdio protocol smoke failed" }
+    $SpeechReport = Join-Path $Reports "$Label-offline-speech.json"
+    try {
+        Invoke-Process (Join-Path $Bundle "ArrowMCP.exe") @("--speech-smoke", "`"$SpeechWav`"", "`"$SpeechReport`"")
+    } catch {
+        Write-SpeechFailure $SpeechReport
+        throw
+    }
+    $SpeechResult = Get-Content $SpeechReport -Raw | ConvertFrom-Json
+    if (-not $SpeechResult.success) { throw "Frozen offline speech validation failed: $SpeechReport" }
 }
 
 try {
+    # This explicit CI setup downloads public weights only. Inference runs with
+    # network access disabled in fresh source/frozen smoke subprocesses.
+    & (Join-Path $env:SystemRoot "System32/WindowsPowerShell/v1.0/powershell.exe") `
+        -NoProfile -NonInteractive -File (Join-Path $Root "scripts/create-speech-fixture.ps1") -OutputPath $SpeechWav
+    if ($LASTEXITCODE -ne 0) { throw "Windows synthetic speech fixture creation failed" }
+    try {
+        $env:ARROW_HOME = $ModelCache
+        $ModelSetupCode = @'
+from arrow.speech.offline import install_voice_model
+try:
+    install_voice_model()
+except Exception as error:
+    detail = f'{type(error).__name__}: {error}; cause: {error.__cause__}'
+    print('::error title=Explicit offline test model setup::' + detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+    raise SystemExit(1)
+'@
+        & $BuildPython -c $ModelSetupCode
+        if ($LASTEXITCODE -ne 0) { throw "Explicit CI voice model setup failed" }
+    } finally {
+        $env:ARROW_HOME = $DataDir
+    }
+    Copy-Item (Join-Path $ModelCache "models") (Join-Path $DataDir "models") -Recurse -Force
+    & $BuildPython (Join-Path $Root "main.py") --speech-smoke $SpeechWav (Join-Path $Reports "source-offline-speech.json")
+    if ($LASTEXITCODE -ne 0) {
+        Write-SpeechFailure (Join-Path $Reports "source-offline-speech.json")
+        throw "Source offline speech validation failed"
+    }
     # A different cwd proves resource and data paths do not depend on the source checkout.
     Set-Location $Temporary
     Test-FrozenApp (Join-Path $Root "dist/ArrowAnnotate") "portable"

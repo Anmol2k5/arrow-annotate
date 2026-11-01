@@ -86,3 +86,13 @@ def test_nonzero_startup_exit_is_logged_and_shown(monkeypatch, tmp_path):
     assert launcher.entrypoint([]) == 1
     assert any('ArrowAnnotate.log' in message for message in messages)
     assert 'exit code 1' in (tmp_path / 'logs' / 'ArrowAnnotate.log').read_text()
+
+
+def test_speech_smoke_reports_invalid_wav_without_starting_desktop(tmp_path):
+    report = tmp_path / 'speech-report.json'
+    result = run_launcher(tmp_path, '--speech-smoke', str(tmp_path / 'missing.wav'), str(report))
+    assert result.returncode == 1, result.stderr
+    assert report.is_file(), result.stderr
+    data = json.loads(report.read_text(encoding='utf-8'))
+    assert data['success'] is False and data['status'] == 'invalid_audio'
+    assert 'requires Windows' not in result.stdout
