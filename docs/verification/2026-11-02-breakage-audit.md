@@ -29,8 +29,15 @@ Ruff, mypy and whitespace checks passed. The four browser tests and dependency
 consistency check also passed during this audit. Independent review reported no
 actionable findings and reran all nine capture-bundle tests successfully.
 
-Native Windows release verification is pending; publication is gated on the
-workflow's source, native, frozen-app, speech, upgrade and checksum checks.
+[Branch run 25](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41357076598)
+and [release run 26](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41357076721)
+both passed native Windows source, clipboard/UIA, frozen/installed speech,
+desktop startup/tray/relaunch, upgrade preservation and uninstall checks.
+The release workflow verified final checksums and published
+[v0.4.4](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.4).
+Public Setup, portable archive, checksum and provenance links were verified.
+The installer remains unsigned; no signing identity has been configured.
+
 Physical microphone/Hinglish accuracy, real mixed-DPI monitors and authenticated
 Codex/Claude answers cannot be established by the Linux or credential-free CI
 checks. Existing opt-in Windows checks remain available for those observations.
