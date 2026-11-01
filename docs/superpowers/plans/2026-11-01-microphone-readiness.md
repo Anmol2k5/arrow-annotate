@@ -73,6 +73,8 @@ passed with the fixes. Real physical input and mixed-language accuracy remain
 unverified until the user runs the explicit Windows test.
 
 Source verification: 746 Python tests passed, 3 native Windows tests skipped on
-Linux. Four browser tests, Ruff, mypy and dependency consistency passed. Native
-installer and runtime checks remain pending; device inventory/stream unit tests
-use mocked PortAudio, not a physical microphone.
+Linux. Four browser tests, Ruff, mypy and dependency consistency passed.
+[Native Windows run 23](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41323375364)
+passed source tests, native clipboard/UIA, frozen/installed synthetic English
+speech, desktop tray relaunch, actual released-installer upgrade and preservation.
+Device inventory/stream unit tests use mocked PortAudio, not a physical mic.
