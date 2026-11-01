@@ -96,3 +96,23 @@ def test_speech_smoke_reports_invalid_wav_without_starting_desktop(tmp_path):
     data = json.loads(report.read_text(encoding='utf-8'))
     assert data['success'] is False and data['status'] == 'invalid_audio'
     assert 'requires Windows' not in result.stdout
+
+
+def test_live_agent_cli_routes_before_mcp_default_without_starting_desktop(tmp_path, monkeypatch):
+    from arrow import launcher
+    from arrow.providers import live_check
+    calls = []
+    monkeypatch.setattr(sys, 'executable', str(tmp_path / 'ArrowMCP.exe'))
+    monkeypatch.setattr(live_check, 'run_live_check', lambda name, report: calls.append((name, report)) or 1)
+    assert launcher.entrypoint(['--verify-agent', 'Claude Code', str(tmp_path / 'report.json')]) == 1
+    assert calls == [('Claude Code', tmp_path / 'report.json')]
+
+
+def test_synthetic_mcp_cli_routes_to_isolated_server(tmp_path, monkeypatch):
+    from arrow import launcher
+    from arrow.mcp import validation
+    calls = []
+    monkeypatch.setattr(validation, 'serve_validation', lambda *args: calls.append(args))
+    fixture, receipt = tmp_path / 'fixture', tmp_path / 'receipt.jsonl'
+    assert launcher.entrypoint(['--validation-mcp', str(fixture), str(receipt)]) == 0
+    assert calls == [(fixture, receipt)]

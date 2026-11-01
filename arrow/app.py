@@ -79,7 +79,7 @@ def _get_foreground_title():
         return ""
 
 
-def main():
+def main(startup_observer=None):
     app = QApplication(sys.argv)
     app.setApplicationName("Arrow Annotate")
     ui_dispatcher = MainThreadDispatcher()
@@ -339,6 +339,8 @@ def main():
     if getattr(sys, 'frozen', False):
         notch.set_status(f"Hold {get_capture_shortcut()} to draw and speak. Release to capture. Settings and Quit are in the system tray.")
         notch.auto_expand_briefly()
+    if startup_observer is not None:
+        startup_observer(app, notch, tray, server, voice)
     sys.exit(app.exec())
 
 

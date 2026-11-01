@@ -38,6 +38,7 @@ class SettingsPanel(QWidget):
     voice_model_finished = pyqtSignal(str)
     voice_model_progress = pyqtSignal(object)
     mcp_checked = pyqtSignal(str, object)
+    live_checked = pyqtSignal(str, object)
     update_checked = pyqtSignal(object)
 
     def __init__(self, save_capture, parent=None):
@@ -48,6 +49,9 @@ class SettingsPanel(QWidget):
         self._agent_statuses = {}
         self._login_processes = {}
         self._mcp_busy = set()
+        self._live_busy = set()
+        self._live_cancel = threading.Event()
+        self._live_workers = {}
         self._voice_installing = False
         self._voice_cancel = threading.Event()
         self.setObjectName('settingsPanel')
@@ -111,8 +115,10 @@ class SettingsPanel(QWidget):
         self.voice_model_finished.connect(self._voice_model_complete)
         self.voice_model_progress.connect(self._show_voice_progress)
         self.mcp_checked.connect(self._apply_mcp_status)
+        self.live_checked.connect(self._apply_live_status)
         self.update_checked.connect(self._show_update_result)
         QApplication.instance().aboutToQuit.connect(self._voice_cancel.set)
+        QApplication.instance().aboutToQuit.connect(self._cancel_live_checks)
         self._login_timer = QTimer(self)
         self._login_timer.setInterval(1000)
         self._login_timer.timeout.connect(self._poll_logins)
@@ -249,6 +255,7 @@ class SettingsPanel(QWidget):
                                     'Arrow does not store passwords or API keys.'))
         self.agent_rows = {}
         self.mcp_rows = {}
+        self.live_rows = {}
         for name in ('Codex', 'Claude Code'):
             card = self._card(layout, name, 'Sign in once, then send captures with their annotated image.')
             # Keep status separate so refreshing does not reconstruct controls.
@@ -275,6 +282,12 @@ class SettingsPanel(QWidget):
             mcp_buttons.addWidget(test)
             card.addLayout(mcp_buttons)
             self.mcp_rows[name] = (mcp_status, configure, test)
+            live_status = self._label('Live handoff: not verified. Uses one synthetic request on your CLI account.')
+            verify = QPushButton('Verify live handoff')
+            verify.clicked.connect(lambda checked=False, provider=name: self._verify_agent(provider))
+            card.addWidget(live_status)
+            card.addWidget(verify)
+            self.live_rows[name] = (live_status, verify)
         self.refresh_agents_button = QPushButton('Refresh connections')
         self.refresh_agents_button.clicked.connect(self.refresh_agents)
         layout.addWidget(self.refresh_agents_button)
@@ -360,6 +373,67 @@ class SettingsPanel(QWidget):
         registered = 'registered' if result.registered else 'not registered' if result.registered is False else 'registration unknown'
         protocol = 'local protocol verified' if result.protocol_verified else 'local protocol not verified'
         label.setText(f'MCP: {registered} · {protocol}. {result.message}')
+
+    def _verify_agent(self, name):
+        if name in self._live_busy:
+            return
+        self._live_busy.add(name)
+        label, button = self.live_rows[name]
+        button.setEnabled(False)
+        label.setText('Checking live image + context retrieval… This can take up to two minutes.')
+
+        def check():
+            from arrow.core.paths import application_home
+            from arrow.providers.live_check import run_live_check
+            try:
+                report = application_home() / 'logs' / ('live-handoff-' + name.lower().replace(' ', '-') + '.json')
+                code = run_live_check(name, report, cancel_event=self._live_cancel)
+                result = json.loads(report.read_text(encoding='utf-8'))
+                if code != 0:
+                    result['model_answer_verified'] = False
+            except Exception:
+                result = {'status': 'failed', 'reason': 'startup_or_cleanup_failed'}
+            try:
+                self.live_checked.emit(name, result)
+            except RuntimeError:
+                pass
+
+        worker = threading.Thread(target=check, daemon=True)
+        self._live_workers[name] = worker
+        worker.start()
+
+    def _cancel_live_checks(self):
+        self._live_cancel.set()
+        # Allow the bounded cancellation path to reap CLI/MCP children and
+        # remove synthetic fixtures before the Qt desktop process exits.
+        for worker in self._live_workers.values():
+            if worker is not threading.current_thread():
+                worker.join(timeout=7)
+
+    def _apply_live_status(self, name, result):
+        self._live_busy.discard(name)
+        self._live_workers.pop(name, None)
+        label, button = self.live_rows[name]
+        button.setEnabled(True)
+        verified = result.get('status') == 'passed' and all(result.get(key) is True for key in (
+            'model_answer_verified', 'receipt_verified', 'image_answer_matches',
+            'context_answer_matches', 'capture_id_matches'))
+        if verified:
+            label.setText('Verified: agent retrieved the exact PNG and context, and answered correctly.')
+        elif result.get('reason') == 'not_installed':
+            label.setText('Live handoff not verified. Install this CLI, sign in, then retry.')
+        elif result.get('reason') == 'timeout':
+            label.setText('Live handoff timed out. Check CLI sign-in and network, then retry.')
+        elif result.get('reason') == 'provider_state_read_only':
+            label.setText('Live handoff not verified: the CLI cannot write its startup state. '
+                          'Run the check with your normal writable Windows account.')
+        elif result.get('reason') == 'unsupported_cli_options':
+            label.setText('Live handoff not verified. Update this CLI to support the required options, then retry.')
+        elif result.get('reason') == 'provider_authentication_failed':
+            label.setText('Live handoff not verified. Sign in using Connect, then retry.')
+        else:
+            label.setText('Live handoff not verified. Check CLI sign-in and network, then retry. '
+                          'A safe report is saved in the data folder under logs.')
 
     def refresh_agents(self):
         if self._checking:

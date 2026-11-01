@@ -7,6 +7,7 @@ import importlib.metadata
 import logging
 import platform
 import sys
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -62,16 +63,34 @@ def entrypoint(argv: list[str] | None = None) -> int:
     mode.add_argument('--version', action='store_true', help='Print the application version')
     mode.add_argument('--mcp', action='store_true', help='Run the MCP stdio server (use ArrowMCP.exe when installed)')
     mode.add_argument('--smoke-test', metavar='REPORT', type=Path, help='Validate packaged dependencies and write a JSON report')
+    mode.add_argument('--desktop-smoke', metavar='REPORT', type=Path,
+                      help='Launch the real Windows desktop, exercise tray handlers and quit; write a JSON report')
     mode.add_argument('--diagnostics', metavar='REPORT', type=Path, help='Check Windows readiness and write a report without saving screen/audio content')
     mode.add_argument('--speech-smoke', nargs=2, metavar=('WAV', 'REPORT'), type=Path,
                       help='Transcribe a synthetic WAV locally in English/auto modes; save diagnostic transcripts')
+    mode.add_argument('--verify-agent', nargs=2, metavar=('CLIENT', 'REPORT'),
+                      help='Use an installed Codex or Claude Code account to verify synthetic MCP image/context retrieval')
+    mode.add_argument('--validation-mcp', nargs=2, type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--interactive', action='store_true', help='Confirm observed Windows checks during --diagnostics (requires console input)')
     args = parser.parse_args(argv)
     if args.interactive and not args.diagnostics:
         parser.error('--interactive requires --diagnostics REPORT')
+    if args.validation_mcp:
+        from arrow.mcp.validation import serve_validation
+        serve_validation(*args.validation_mcp)
+        return 0
+    if args.verify_agent:
+        name, report = args.verify_agent
+        if name not in ('Codex', 'Claude Code'):
+            parser.error('--verify-agent CLIENT must be Codex or "Claude Code"')
+        from arrow.providers.live_check import run_live_check
+        return run_live_check(name, Path(report))
     if args.speech_smoke:
         from arrow.speech.smoke import write_speech_report
         return write_speech_report(*args.speech_smoke)
+    if args.desktop_smoke:
+        from arrow.startup_smoke import run_desktop_smoke
+        return run_desktop_smoke(args.desktop_smoke)
     if args.diagnostics:
         from arrow.diagnostics import write_report as write_diagnostics_report
         return write_diagnostics_report(args.diagnostics, interactive=args.interactive)
@@ -94,6 +113,12 @@ def entrypoint(argv: list[str] | None = None) -> int:
               'Use --mcp for the cross-platform agent server.')
         return 1
 
+    return _run_desktop()
+
+
+def _run_desktop(*, startup_observer=None, error_handler: Callable[[str], None] | None = None) -> int:
+    """One production startup path; explicit smoke mode replaces modal errors."""
+    show_error = error_handler if error_handler is not None else _show_message
     lock = None
     log_path = application_home() / 'logs' / 'ArrowAnnotate.log'
     try:
@@ -102,20 +127,23 @@ def entrypoint(argv: list[str] | None = None) -> int:
         lock = QLockFile(str(application_home() / 'desktop.lock'))
         lock.setStaleLockTime(0)
         if not lock.tryLock(0):
-            _show_message('Arrow Annotate is already running. Open it from the system tray.')
-            return 0
+            show_error('Arrow Annotate is already running. Open it from the system tray.')
+            return 1 if error_handler is not None else 0
         from arrow.app import main
-        main()
+        if startup_observer is None:
+            main()
+        else:
+            main(startup_observer=startup_observer)
         return 0
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         if code:
             logging.getLogger(__name__).exception('Arrow Annotate stopped with exit code %s', code)
-            _show_message(f'Arrow Annotate could not start. Details were saved to:\n{log_path}')
+            show_error(f'Arrow Annotate could not start. Details were saved to:\n{log_path}')
         return code
     except Exception:
         logging.getLogger(__name__).exception('Arrow Annotate could not start')
-        _show_message(f'Arrow Annotate could not start. Details were saved to:\n{log_path}')
+        show_error(f'Arrow Annotate could not start. Details were saved to:\n{log_path}')
         return 1
     finally:
         if lock is not None and lock.isLocked():

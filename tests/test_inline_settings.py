@@ -263,3 +263,80 @@ def test_update_check_shows_notification_and_opens_no_browser_automatically(tmp_
     assert '9.0.0' in panel.update_status.text() and 'available' in panel.update_status.text()
     assert panel.update_button.isEnabled()
     notch.close()
+
+
+def test_live_handoff_requires_actual_answer_and_keeps_other_statuses_separate(tmp_path, monkeypatch):
+    from arrow.providers import live_check
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    entered, release = Event(), Event()
+    calls = []
+    def verify(name, report, *, cancel_event):
+        calls.append(name)
+        entered.set()
+        assert release.wait(2)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({'status': 'passed', 'model_answer_verified': True,
+                                     'receipt_verified': True, 'image_answer_matches': True,
+                                     'context_answer_matches': True, 'capture_id_matches': True}))
+        return 0
+    monkeypatch.setattr(live_check, 'run_live_check', verify)
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    label, button = panel.live_rows['Codex']
+    panel.agent_rows['Codex'][0].setText('CLI signed in')
+    panel.mcp_rows['Codex'][0].setText('MCP: local protocol verified')
+    button.click()
+    assert entered.wait(1)
+    assert not button.isEnabled() and 'Checking' in label.text()
+    panel._verify_agent('Codex')
+    assert calls == ['Codex']
+    release.set()
+    loop = QEventLoop()
+    panel.live_checked.connect(loop.quit)
+    QTimer.singleShot(1500, loop.quit)
+    if panel._live_busy:
+        loop.exec()
+    qt.processEvents()
+    assert button.isEnabled()
+    assert 'Verified' in label.text()
+    assert panel.agent_rows['Codex'][0].text() == 'CLI signed in'
+    assert panel.mcp_rows['Codex'][0].text() == 'MCP: local protocol verified'
+    notch.close()
+
+
+def test_live_handoff_startup_or_unverified_answer_cannot_show_success(tmp_path, monkeypatch):
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    panel._apply_live_status('Codex', {'status': 'passed', 'model_answer_verified': False})
+    assert 'Verified' not in panel.live_rows['Codex'][0].text()
+    panel._apply_live_status('Claude Code', {'status': 'not_run', 'reason': 'not_installed'})
+    assert 'Install' in panel.live_rows['Claude Code'][0].text()
+    qt.processEvents()
+    notch.close()
+
+
+def test_quit_cancels_live_check_and_waits_for_worker_cleanup(tmp_path, monkeypatch):
+    from arrow.providers import live_check
+    monkeypatch.setenv('ARROW_HOME', str(tmp_path))
+    qt = QApplication.instance() or QApplication([])
+    started, cleaned = Event(), Event()
+    def verify(name, report, *, cancel_event):
+        started.set()
+        assert cancel_event.wait(2)
+        cleaned.set()
+        return 1
+    monkeypatch.setattr(live_check, 'run_live_check', verify)
+    notch = DynamicNotch()
+    panel = notch._settings_view
+    panel._verify_agent('Codex')
+    assert started.wait(1)
+    worker = panel._live_workers['Codex']
+    qt.aboutToQuit.emit()
+    assert cleaned.is_set()
+    assert not worker.is_alive()
+    qt.processEvents()
+    assert 'Verified' not in panel.live_rows['Codex'][0].text()
+    notch.close()

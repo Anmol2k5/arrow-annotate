@@ -71,9 +71,21 @@ jobs:
         with:
           path: build/windows/voice-model-home/models
           key: windows-whisper-base-v1-${{ hashFiles('arrow/speech/offline.py') }}
-      - name: Exercise frozen speech, installed apps, then uninstall
+      - name: Exercise speech, native desktop relaunch, released upgrade and uninstall
         shell: pwsh
-        run: ./scripts/test-windows-install.ps1
+        run: |
+          $ErrorActionPreference = "Stop"
+          try {
+            & ./scripts/test-windows-install.ps1 *>&1 | Tee-Object -FilePath build/windows/ci-install.log
+          } catch {
+            $Diagnostic = $_.Exception.Message
+            if (Test-Path build/windows/ci-install.log) {
+              $Diagnostic += "`n" + ((Get-Content build/windows/ci-install.log -Tail 60) -join "`n")
+            }
+            $Escaped = $Diagnostic.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows runtime validation failed::$Escaped"
+            throw
+          }
       - name: Preserve installers, hashes, provenance and smoke reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -83,6 +95,7 @@ jobs:
             dist/artifacts/
             dist/smoke-reports/
             build/windows/ci-build.log
+            build/windows/ci-install.log
             build/windows/source-tests.xml
             build/windows/native-clipboard.xml
             build/windows/native-ui-*.xml

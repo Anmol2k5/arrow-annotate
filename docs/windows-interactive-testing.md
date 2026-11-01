@@ -90,6 +90,12 @@ only the reviewer status enters this diagnostic report. Use synthetic phrases.
 
 ## Actual Codex and Claude Code sessions
 
+For an automated synthetic check, use **Settings → Agents → Verify live handoff**
+for each client. It verifies an actual MCP receipt and two answers, including a
+random code visible only in the PNG; see [live agent validation](live-agent-validation.md).
+This explicit action uses your CLI account. It is separate from the inventory
+and guided diagnostics harness below and never runs at startup.
+
 These steps send the synthetic capture to your chosen client when you explicitly
 submit it; normal provider usage/account charges may apply. Do not use a private
 repository, screenshot or real task. The harness never performs these steps.

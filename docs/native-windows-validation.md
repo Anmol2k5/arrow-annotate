@@ -106,3 +106,35 @@ synthetic English transcription in both fixed/auto modes through source, portabl
 and installed runtimes. It also passed native clipboard, frozen MCP protocol and
 install/uninstall checks. These observations do not establish physical microphone,
 natural Hinglish, adjacent mixed-DPI monitors or authenticated agent-session results.
+
+## Desktop lifecycle and upgrade checks
+
+The candidate adds a separate opt-in lifecycle command:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\ArrowAnnotate\ArrowAnnotate.exe" --desktop-smoke "$env:TEMP\arrow-desktop.json"
+```
+
+Run it from a fresh process with the installed app closed. Without `ARROW_HOME`
+it uses a disposable test home; it never records audio, captures your screen or
+starts an agent task. It launches the production app with its real instance lock,
+HTTP/WebSocket servers, hotkeys, Qt window and system tray. The native HWND must
+be visible. It hides the notch and restores through the tray activation signal,
+closes the last window and restores through **Show Arrow**, then invokes the real
+**Quit** action and verifies tray/server cleanup. These are programmatic native
+Qt actions; physically clicking the Windows shell icon remains a manual check.
+Linux or an offscreen Qt backend cannot produce a native pass.
+
+The Windows installer workflow runs that command twice in separate portable
+processes and twice after installation. Successful relaunch also proves that the
+previous process released its instance lock and server ports. It separately
+installs the checksum-verified public `0.4.1` release, seeds the frozen data
+fixture, retrieves its capture using that installed MCP executable, upgrades the
+same installation directory, and verifies all saved data before and after the
+new desktop launches. See [upgrade validation](upgrade-validation.md) for the
+fixture and exact preservation assertions.
+
+Authenticated image-and-context answers are checked separately in
+**Settings → Agents → Verify live handoff**; see
+[live agent validation](live-agent-validation.md). No provider account is used by
+public Windows CI.
