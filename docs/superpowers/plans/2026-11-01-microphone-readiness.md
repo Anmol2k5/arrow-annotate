@@ -53,7 +53,7 @@ normal capture. Opening phase updates production notch status.
 - [x] Run full Python suite, Ruff, mypy, browser tests and dependency check.
 - [x] Fresh review and meaningful regressions for important findings.
 - [x] Document real Windows microphone/Hinglish checks and limitations.
-- [ ] Push versioned changes; require native Windows installer/lifecycle/upgrade
+- [x] Push versioned changes; require native Windows installer/lifecycle/upgrade
   and speech checks before publishing a testable installer.
 
 ## Implementation record
@@ -78,3 +78,9 @@ Linux. Four browser tests, Ruff, mypy and dependency consistency passed.
 passed source tests, native clipboard/UIA, frozen/installed synthetic English
 speech, desktop tray relaunch, actual released-installer upgrade and preservation.
 Device inventory/stream unit tests use mocked PortAudio, not a physical mic.
+
+[Release run 24](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41324137506)
+repeated all Windows checks, verified final hashes and published
+[v0.4.3](https://github.com/Anmol2k5/arrow-annotate/releases/tag/v0.4.3).
+Public Setup, portable archive, checksum and provenance links were verified.
+The installer is unsigned, as no trusted signing identity is configured.
