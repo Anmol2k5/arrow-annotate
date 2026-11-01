@@ -97,3 +97,12 @@ still supplies it. Speech installs constrain PyAV below 19; PyAV 18.1.0 passes t
 real decoder regression. A user encountering this error should update Arrow (or
 reinstall the source speech extra); downloading the voice model again does not
 repair an incompatible decoder runtime. This test does not use a fake decoder.
+
+## Recorded 0.4.1 result
+
+[Windows run 41261023249](https://github.com/Anmol2k5/arrow-annotate/actions/runs/41261023249)
+passed the real desktop/UIA/capture test at imposed Qt scales 1 and 1.5 and real
+synthetic English transcription in both fixed/auto modes through source, portable
+and installed runtimes. It also passed native clipboard, frozen MCP protocol and
+install/uninstall checks. These observations do not establish physical microphone,
+natural Hinglish, adjacent mixed-DPI monitors or authenticated agent-session results.
